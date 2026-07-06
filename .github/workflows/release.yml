@@ -1,0 +1,70 @@
+# Tag → npm. Push a tag like v0.2.0 (matching package.json's version) and this
+# re-runs the full verify loop, then publishes via npm TRUSTED PUBLISHING:
+# npm trusts this workflow's OIDC identity directly — no token exists anywhere,
+# and provenance is attached explicitly (v0.2.1 showed the trusted-publisher default does NOT add it on its own).
+# Idempotent: a tag whose version is already on npm verifies, then green-skips the publish.
+#
+# The npm-side half of the trust lives in the package's settings on npmjs.com
+# (Trusted Publisher: GitHub Actions · magelegal/mage-dataroom-cli ·
+# release.yml). Requirements: npm CLI ≥ 11.5.1 (Node 20 bundles npm 10, hence
+# the upgrade step) and a GitHub-hosted runner. One npm quirk: a BRAND-NEW
+# package can't be born through trusted publishing — the first-ever version is
+# published manually; every version after that lands through this workflow.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+
+      - name: Tag must match package.json version
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Upgrade npm (trusted publishing needs ≥ 11.5.1)
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Publish (OIDC trusted publishing — tokenless)
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "@magelegal/cli@${VERSION}" version >/dev/null 2>&1; then
+            echo "::notice::@magelegal/cli@${VERSION} is already on npm — nothing to publish."
+            exit 0
+          fi
+          npm publish --provenance --access public

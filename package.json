@@ -1,0 +1,54 @@
+{
+  "name": "@magelegal/cli",
+  "version": "0.2.1",
+  "description": "Upload and organize a Mage data room from the command line — built for humans and AI agents.",
+  "type": "module",
+  "bin": {
+    "mage": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "mage",
+    "dataroom",
+    "data-room",
+    "due-diligence",
+    "virtual-data-room",
+    "cli",
+    "upload",
+    "agent",
+    "m&a"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magelegal/mage-dataroom-cli.git"
+  },
+  "homepage": "https://github.com/magelegal/mage-dataroom-cli#readme",
+  "bugs": {
+    "url": "https://github.com/magelegal/mage-dataroom-cli/issues"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2"
+  }
+}

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { buildContext, CliError } from '../../context'
 import * as output from '../../output'
 import { collectUploads, formatBytes, joinFolder, type UploadItem } from '../../walk'
+import { attachToItem, report as reportAttachment } from './readiness'
 
 // Upload files in bounded parallel batches — never one-at-a-time (a data room is
 // hundreds of files). The proxied endpoint buffers each file, so we also warn
@@ -22,7 +23,7 @@ function label(item: UploadItem): string {
 
 export async function uploadCommand(
   paths: string[],
-  opts: { to?: string; apiUrl?: string; json?: boolean },
+  opts: { to?: string; forItem?: string; apiUrl?: string; json?: boolean },
 ): Promise<void> {
   const { client, roomId } = await buildContext(opts)
   const toFolder = joinFolder(opts.to)
@@ -36,6 +37,16 @@ export async function uploadCommand(
     }
   }
   if (items.length === 0) throw new CliError('No files found to upload.')
+
+  // Fail fast on a bad checklist item id — before any bytes move.
+  if (opts.forItem) {
+    const coverage = await client.getCoverage(roomId)
+    if (coverage.computed && !coverage.items.some((i) => i.itemId === opts.forItem)) {
+      throw new CliError(
+        `No checklist item "${opts.forItem}". Run \`mage readiness\` to see the item ids.`,
+      )
+    }
+  }
 
   output.info(`Uploading ${items.length} file${items.length === 1 ? '' : 's'}…`)
 
@@ -71,11 +82,27 @@ export async function uploadCommand(
 
   const uploaded = results.filter((r) => r.ok).length
   const failed = results.length - uploaded
+  if (!opts.json) {
+    output.info(`\nUploaded ${uploaded}/${results.length}${failed ? `, ${failed} failed` : ''}.`)
+  }
+
+  // Link everything that landed to the checklist item, in one write.
+  const uploadedIds = results.filter((r) => r.ok).map((r) => r.documentId!)
+  let attachment: { itemId: string; status: string | null } | undefined
+  if (opts.forItem && uploadedIds.length > 0) {
+    const coverage = await attachToItem(client, roomId, opts.forItem, uploadedIds)
+    if (!opts.json) reportAttachment(coverage, opts.forItem, uploadedIds, opts)
+    attachment = {
+      itemId: opts.forItem,
+      status: coverage.items.find((i) => i.itemId === opts.forItem)?.status ?? null,
+    }
+  }
 
   if (opts.json) {
     output.printJson({
       uploaded,
       failed,
+      ...(attachment ? { attachedToItem: attachment } : {}),
       results: results.map((r) => ({
         file: r.item.absPath,
         folder: r.item.folderPath,
@@ -84,8 +111,6 @@ export async function uploadCommand(
         error: r.error,
       })),
     })
-  } else {
-    output.info(`\nUploaded ${uploaded}/${results.length}${failed ? `, ${failed} failed` : ''}.`)
   }
   if (failed) process.exitCode = 1
 }

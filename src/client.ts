@@ -36,6 +36,32 @@ export interface FolderSet {
   folders: string[]
 }
 
+/** One readiness checklist item, as the coverage endpoint returns it. */
+export interface CoverageItem {
+  itemId: string
+  label: string
+  requirementLevel: string
+  /** present | partial | missing | not_applicable */
+  status: string
+  /** The documents currently attached to the item. */
+  matchedDocumentIds: string[]
+  completed: boolean
+  section: string
+  expectedScope: string
+  founderHint: string
+  multiDoc: boolean
+}
+
+/** The room's readiness checklist (gap analysis) with per-item statuses. */
+export interface Coverage {
+  roomId: string
+  /** False until the first analysis has run (right after documents arrive). */
+  computed: boolean
+  missingRequiredCount: number
+  computedAt: string | null
+  items: CoverageItem[]
+}
+
 /** A data room as the org-scoped rooms list returns it. */
 export interface LiteRoom {
   id: string
@@ -156,6 +182,22 @@ export class MageClient {
   deleteDocument(roomId: string, documentId: string): Promise<void> {
     return this.request<void>('DELETE', `/rooms/${roomId}/documents/${documentId}`, {
       expectEmpty: true,
+    })
+  }
+
+  /** The room's readiness checklist — what's present, partial, and missing. */
+  getCoverage(roomId: string): Promise<Coverage> {
+    return this.request<Coverage>('GET', `/rooms/${roomId}/coverage`)
+  }
+
+  /**
+   * Set the FULL set of documents attached to one checklist item (the server
+   * diffs it against its own matches, so pass the merged set — existing
+   * attachments plus additions). Returns the refreshed coverage.
+   */
+  setCoverageItem(roomId: string, itemId: string, documentIds: string[]): Promise<Coverage> {
+    return this.request<Coverage>('PUT', `/rooms/${roomId}/coverage/items/${itemId}`, {
+      json: { documentIds },
     })
   }
 

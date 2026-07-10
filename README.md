@@ -75,7 +75,9 @@ The CLI discovers which room the key belongs to on first use, so the key is all 
 | `mage logout` | Sign out: revoke the CLI's key where possible and clear this machine |
 | `mage rooms` | List your organization's data rooms (browser login) |
 | `mage use <room>` | Switch which room this machine is bound to (browser login) |
-| `mage upload <paths…> [--to <folder>]` | Upload files or whole folders, mirroring their structure |
+| `mage upload <paths…> [--to <folder>] [--for-item <itemId>]` | Upload files or whole folders, mirroring their structure |
+| `mage readiness` | Show the room's readiness checklist: what's present, partial, and missing |
+| `mage readiness attach <itemId> <documents…>` | Attach already-uploaded documents to a checklist item |
 | `mage ls [folder]` | List the room's documents, grouped by folder |
 | `mage mkdir <folder>` | Create an empty folder |
 | `mage rm <target> [--folder] [--yes]` | Delete a document, or a folder with `--folder` |
@@ -102,6 +104,23 @@ mage upload ./diligence --to "01-Diligence"
 
 Uploads run in parallel. Dotfiles (`.DS_Store`, `.git`, …) are skipped. Files begin processing on arrival; `mage ls` shows their status.
 
+### Readiness
+
+Every room carries a readiness checklist — the documents investors expect to find, each `present`, `partial`, or `missing`. The CLI reads and fills it:
+
+```bash
+mage readiness                # the checklist, with what's still missing
+mage readiness --json         # the same, structured for an agent
+
+# Upload and satisfy a checklist item in one step
+mage upload 2025-tax-return.pdf --for-item tax-returns
+
+# Or link documents that are already in the room
+mage readiness attach fin-statements q1.pdf q2.pdf
+```
+
+`--for-item` uploads the files, then attaches every one that landed to the item. `attach` accepts a document id, a name, or `folder/name`, and is additive — documents already attached to the item stay attached.
+
 ### List
 
 ```bash
@@ -122,22 +141,36 @@ mage rm "old.pdf" --yes             # skip the confirmation prompt
 
 ## Using it with an AI agent
 
-Hand your agent a key and a directory, and let it populate the room:
+This is what the CLI is really for. Getting every document into a data room is the slowest part of running diligence — hand your agent a key and it does the gathering for you: it reads what the room still needs, pulls the documents from wherever they live (your accounting system, your drive, your inbox), and uploads each one against the right checklist item.
 
 ```bash
-export MAGE_API_KEY="sk_…"
-
-mage ls --json                              # read the current state first
-mage mkdir "Corporate/Charters"             # lay out structure
-mage upload ./exports --to "Corporate"      # mirror local files in
-mage ls                                      # confirm
+export MAGE_API_KEY="sk_…"    # the key is all an agent needs — it discovers its room
 ```
 
-Every command speaks `--json`, so an agent can read structured results and decide what to do next.
+The loop:
+
+```bash
+# 1. Read what's missing.
+mage readiness --json
+#    → items with status "missing", each with an itemId, a label,
+#      and a founderHint describing what the item should contain
+
+# 2. Gather the documents from wherever they live (the agent's own tools).
+
+# 3. Upload each against its item — one step, upload + attach.
+mage upload ./downloads/2025-tax-return.pdf --for-item tax-returns
+
+# 4. Re-read to confirm, and repeat until nothing required is missing.
+mage readiness --json
+```
+
+An example task to give an agent: *"Pull last year's tax return from our accounting system and satisfy the missing tax items in my Mage data room readiness checklist."*
+
+Beyond readiness, the same key drives the whole room: `mage ls --json` to read the current state, `mage mkdir` to lay out structure, `mage upload ./exports --to "Corporate"` to mirror local files in. Every command speaks `--json`, so an agent can read structured results and decide what to do next.
 
 ## What a key can and cannot do
 
-A room-scoped key — whether the CLI minted it at login or you pasted one in — can read the room's document list, upload, manage folders, and delete documents in **its own room only**. It **cannot** download document contents, reach another room, or change room settings. Revoke a key any time under **Settings → API keys**; that kills it everywhere instantly.
+A room-scoped key — whether the CLI minted it at login or you pasted one in — can read the room's document list, upload, manage folders, delete documents, and read and fill the readiness checklist in **its own room only**. It **cannot** download document contents, reach another room, or change room settings. Revoke a key any time under **Settings → API keys**; that kills it everywhere instantly.
 
 Only `mage rooms` and `mage use` act as *you* rather than as the key (they list your org's rooms and mint the key for a newly chosen room); they reuse your browser sign-in and re-ask for approval when it has lapsed.
 

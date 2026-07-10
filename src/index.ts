@@ -15,6 +15,7 @@ import { lsCommand } from './commands/dataroom/ls'
 import { loginCommand } from './commands/dataroom/login'
 import { logoutCommand } from './commands/dataroom/logout'
 import { mkdirCommand } from './commands/dataroom/mkdir'
+import { readinessAttachCommand, readinessCommand } from './commands/dataroom/readiness'
 import { rmCommand } from './commands/dataroom/rm'
 import { roomsCommand } from './commands/dataroom/rooms'
 import { uploadCommand } from './commands/dataroom/upload'
@@ -69,6 +70,7 @@ program
   mage login                   sign in via your browser
   mage upload ./diligence      mirror a folder into your room
   mage ls                      see what's there
+  mage readiness               see what investors still expect
 `,
   )
 
@@ -127,8 +129,24 @@ program
   .helpGroup('Data room:')
   .argument('<paths...>', 'Files or directories to upload')
   .option('--to <folder>', 'Destination folder in the room (created as needed)')
+  .option('--for-item <itemId>', 'Attach the uploads to this readiness checklist item (see `mage readiness`)')
   .description('Upload files or whole folders, mirroring their structure')
   .action((paths, _opts, cmd) => run(() => uploadCommand(paths, cmd.optsWithGlobals())))
+
+const readiness = program
+  .command('readiness')
+  .helpGroup('Data room:')
+  .description("Show the room's readiness checklist: what's present, partial, and missing")
+  .action((_opts, cmd) => run(() => readinessCommand(cmd.optsWithGlobals())))
+
+readiness
+  .command('attach')
+  .argument('<itemId>', 'Checklist item id (from `mage readiness`)')
+  .argument('<documents...>', 'Documents to attach — by id, name, or folder/name')
+  .description('Attach already-uploaded documents to a checklist item')
+  .action((itemId, documents, _opts, cmd) =>
+    run(() => readinessAttachCommand(itemId, documents, cmd.optsWithGlobals())),
+  )
 
 program
   .command('ls')

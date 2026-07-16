@@ -6,8 +6,8 @@
 #
 # The npm-side half of the trust lives in the package's settings on npmjs.com
 # (Trusted Publisher: GitHub Actions · magelegal/mage-dataroom-cli ·
-# release.yml). Requirements: npm CLI ≥ 11.5.1 (Node 20 bundles npm 10, hence
-# the upgrade step) and a GitHub-hosted runner. One npm quirk: a BRAND-NEW
+# release.yml). Requirements: npm CLI ≥ 11.5.1 (the runner's Node bundles an
+# older npm, hence the pinned upgrade step) and a GitHub-hosted runner. One npm quirk: a BRAND-NEW
 # package can't be born through trusted publishing — the first-ever version is
 # published manually; every version after that lands through this workflow.
 name: Release
@@ -52,12 +52,16 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # Pinned major, not @latest: v0.4.0's first release run died here when
+      # npm@12 dropped support for the job's Node version. npm 11 satisfies
+      # trusted publishing (≥ 11.5.1) and its support window is ours to bump
+      # deliberately, not npm's to break under us.
       - name: Upgrade npm (trusted publishing needs ≥ 11.5.1)
         run: |
-          npm install -g npm@latest
+          npm install -g npm@11
           npm --version
 
       - name: Publish (OIDC trusted publishing — tokenless)

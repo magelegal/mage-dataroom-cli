@@ -1,7 +1,7 @@
 {
   "name": "@magelegal/cli",
-  "version": "0.3.0",
-  "description": "Upload and organize a Mage data room from the command line — built for humans and AI agents.",
+  "version": "0.4.0",
+  "description": "Upload and organize a Mage data room from the command line \u2014 built for humans and AI agents.",
   "type": "module",
   "bin": {
     "mage": "dist/index.js"

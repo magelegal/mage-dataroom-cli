@@ -11,6 +11,7 @@
  */
 import { Command } from 'commander'
 import { ApiError } from './client'
+import { downloadCommand } from './commands/dataroom/download'
 import { lsCommand } from './commands/dataroom/ls'
 import { loginCommand } from './commands/dataroom/login'
 import { logoutCommand } from './commands/dataroom/logout'
@@ -154,6 +155,14 @@ program
   .argument('[folder]', 'Limit the listing to this folder and its subfolders')
   .description('List the documents in the room, grouped by folder')
   .action((folder, _opts, cmd) => run(() => lsCommand(folder, cmd.optsWithGlobals())))
+
+program
+  .command('download')
+  .helpGroup('Data room:')
+  .argument('[target]', "A folder (recursive), a document (id, name, or folder/name), or '.'/nothing for the whole room")
+  .argument('[dest]', 'Local destination directory (defaults to ./<room-or-folder-name>)')
+  .description('Download documents, mirroring the room folder structure locally')
+  .action((target, dest, _opts, cmd) => run(() => downloadCommand(target, dest, cmd.optsWithGlobals())))
 
 program
   .command('mkdir')

@@ -79,6 +79,7 @@ The CLI discovers which room the key belongs to on first use, so the key is all 
 | `mage readiness` | Show the room's readiness checklist: what's present, partial, and missing |
 | `mage readiness attach <itemId> <documents…>` | Attach already-uploaded documents to a checklist item |
 | `mage ls [folder]` | List the room's documents, grouped by folder |
+| `mage download [target] [dest]` | Download the room, a folder, or one document, mirroring the folder structure |
 | `mage mkdir <folder>` | Create an empty folder |
 | `mage rm <target> [--folder] [--yes]` | Delete a document, or a folder with `--folder` |
 | `mage version` | Print the CLI version |
@@ -129,6 +130,22 @@ mage ls "Corporate"     # one folder and its subfolders
 mage ls --json          # raw document array for scripting
 ```
 
+### Download
+
+```bash
+mage download                        # the whole room → ./<room-name>/
+mage download . ./backup             # the whole room → ./backup/
+mage download "Corporate" ./corp     # one folder (recursive) → ./corp/
+mage download "Corporate/charter.pdf"  # a single document, by folder/name (or by id)
+mage download --json                 # machine-readable results for scripting
+```
+
+Folder structure is mirrored locally, files download five at a time, and every
+file lands on the room's access-audit trail. Downloading requires a key minted
+with the **Download** permission — keys minted by `mage login` include it.
+Keys created before permissions existed are upload/organize-only: re-mint the
+key (or run `mage login` again) to download.
+
 ### Delete
 
 ```bash
@@ -170,7 +187,7 @@ Beyond readiness, the same key drives the whole room: `mage ls --json` to read t
 
 ## What a key can and cannot do
 
-A room-scoped key — whether the CLI minted it at login or you pasted one in — can read the room's document list, upload, manage folders, delete documents, and read and fill the readiness checklist in **its own room only**. It **cannot** download document contents, reach another room, or change room settings. Revoke a key any time under **Settings → API keys**; that kills it everywhere instantly.
+A room-scoped key acts in **its own room only** and carries the permission set chosen when it was minted — visible under **Settings → API keys**. Keys minted by `mage login` can read the room's document list, upload, manage folders, delete documents, download document files, and read and fill the readiness checklist. A key minted without the **Download** permission cannot fetch document contents; one minted without **Manage room** (the default) cannot change room settings, people, or sharing. No key can reach another room or delete the room itself. Permissions are fixed at mint — re-mint to change them — and revoking a key under **Settings → API keys** kills it everywhere instantly. Keys created before permissions existed act as upload/organize-only.
 
 Only `mage rooms` and `mage use` act as *you* rather than as the key (they list your org's rooms and mint the key for a newly chosen room); they reuse your browser sign-in and re-ask for approval when it has lapsed.
 

@@ -83,6 +83,11 @@ export interface LiteMe {
 }
 
 /** The mint response — the ONLY time the raw `key` is ever returned. */
+export interface DocumentUrl {
+  url: string
+  isPdfDerivative: boolean
+}
+
 export interface MintedApiKey {
   id: string
   name: string
@@ -158,6 +163,19 @@ export class MageClient {
     return this.request<DocumentSummary[]>('GET', `/rooms/${roomId}/documents`)
   }
 
+  /** Mint a short-lived presigned URL for a document's file bytes.
+
+      Requires a key minted with the `room:download` permission — keys created
+      before permissions existed (or minted without Download) get a 403 with
+      `missing_permission` in the detail. Every mint lands on the room's
+      access-audit trail server-side. */
+  getDocumentUrl(roomId: string, documentId: string): Promise<DocumentUrl> {
+    return this.request<DocumentUrl>(
+      'GET',
+      `/rooms/${roomId}/documents/${documentId}/url?download=true&intent=open`,
+    )
+  }
+
   uploadDocument(
     roomId: string,
     file: { filename: string; content: Uint8Array; contentType?: string; folderPath?: string | null },
@@ -220,7 +238,11 @@ export class MageClient {
 
   /** Mint a room-scoped key (owner/admin only). The raw key is returned exactly once. */
   mintApiKey(roomId: string, name: string): Promise<MintedApiKey> {
-    return this.request<MintedApiKey>('POST', `/rooms/${roomId}/api-keys`, { json: { name } })
+    // Permissions are explicit (not the server default) so the CLI's contract
+    // is visible here: read + download + organize, never room management.
+    return this.request<MintedApiKey>('POST', `/rooms/${roomId}/api-keys`, {
+      json: { name, permissions: ['room:view', 'room:download', 'room:edit'] },
+    })
   }
 
   /** Revoke a key — how a re-login retires the key it replaces. */

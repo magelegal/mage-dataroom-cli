@@ -103,7 +103,7 @@ test('bearer auth sends Authorization instead of X-API-Key', async () => {
   expect(calls[0]!.init.headers!['X-API-Key']).toBeUndefined()
 })
 
-test('mintApiKey posts the key name; revokeApiKey hits the revoke path', async () => {
+test('mintApiKey posts the key name + explicit permissions; revokeApiKey hits the revoke path', async () => {
   responder = () =>
     new Response(
       JSON.stringify({ id: 'key_1', name: 'CLI — laptop', keyPrefix: 'mk_live_ab', key: 'mk_live_secret' }),
@@ -114,7 +114,12 @@ test('mintApiKey posts the key name; revokeApiKey hits the revoke path', async (
   const minted = await client.mintApiKey('room1', 'CLI — laptop')
   expect(minted.key).toBe('mk_live_secret')
   expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/api-keys')
-  expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ name: 'CLI — laptop' })
+  // Permissions are explicit so the CLI's contract is pinned here: read +
+  // download + organize, never room management.
+  expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+    name: 'CLI — laptop',
+    permissions: ['room:view', 'room:download', 'room:edit'],
+  })
 
   responder = () => new Response('{"ok":true}', { status: 200 })
   await client.revokeApiKey('room1', 'key_1')
@@ -150,4 +155,20 @@ test('a JSON error body becomes an ApiError carrying status + detail', async () 
     expect((err as ApiError).status).toBe(404)
     expect((err as ApiError).detail).toBe('Room not found')
   }
+})
+
+test('getDocumentUrl mints an audited download URL for one document', async () => {
+  responder = () =>
+    new Response(JSON.stringify({ url: 'https://s3/presigned', isPdfDerivative: false }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  const client = new MageClient('https://api.example.com', 'mk_live_key')
+
+  const result = await client.getDocumentUrl('room1', 'doc1')
+  expect(result.url).toBe('https://s3/presigned')
+  expect(calls[0]!.url).toBe(
+    'https://api.example.com/api/v1/lite/rooms/room1/documents/doc1/url?download=true&intent=open',
+  )
+  expect(calls[0]!.init.headers!['X-API-Key']).toBe('mk_live_key')
 })

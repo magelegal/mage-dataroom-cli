@@ -15,6 +15,7 @@ import { downloadCommand } from './commands/dataroom/download'
 import { lsCommand } from './commands/dataroom/ls'
 import { loginCommand } from './commands/dataroom/login'
 import { logoutCommand } from './commands/dataroom/logout'
+import { mcpCommand } from './commands/dataroom/mcp'
 import { mkdirCommand } from './commands/dataroom/mkdir'
 import { readinessAttachCommand, readinessCommand } from './commands/dataroom/readiness'
 import { rmCommand } from './commands/dataroom/rm'
@@ -170,6 +171,12 @@ program
   .argument('<folder>', 'Folder path to create (e.g. 01-Corporate/Charters)')
   .description('Create an empty folder in the room')
   .action((folder, _opts, cmd) => run(() => mkdirCommand(folder, cmd.optsWithGlobals())))
+
+program
+  .command('mcp')
+  .helpGroup('Data room:')
+  .description('Run an MCP server over stdio so AI agents can operate the room (uses MAGE_API_KEY)')
+  .action((_opts, cmd) => run(() => mcpCommand(cmd.optsWithGlobals())))
 
 program
   .command('rm')

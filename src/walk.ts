@@ -5,7 +5,7 @@
  *
  * A directory argument uploads its *contents* under `--to` (the wrapper dir name
  * is not repeated), matching how people think about "put this folder's files in
- * the room". Dotfiles (`.DS_Store`, `.git`, …) are skipped.
+ * the room". Every file the walk finds is included — hidden names are not skipped.
  */
 import { readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
@@ -40,7 +40,6 @@ export function collectUploads(inputPath: string, toFolder: string | null): Uplo
   const items: UploadItem[] = []
   const walk = (dir: string, relFolder: string | null): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name.startsWith('.')) continue // skip dotfiles / dot-dirs
       const abs = join(dir, entry.name)
       if (entry.isDirectory()) {
         walk(abs, joinFolder(relFolder, entry.name))

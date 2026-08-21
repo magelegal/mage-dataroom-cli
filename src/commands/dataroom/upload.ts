@@ -1,14 +1,13 @@
-import { readFileSync } from 'node:fs'
 import { buildContext, CliError } from '../../context'
 import * as output from '../../output'
-import { collectUploads, formatBytes, joinFolder, type UploadItem } from '../../walk'
+import { collectUploads, joinFolder, type UploadItem } from '../../walk'
 import { attachToItem, report as reportAttachment } from './readiness'
+import { resolveUploadMode, uploadFile } from './transport'
 
-// Upload files in bounded parallel batches — never one-at-a-time (a data room is
-// hundreds of files). The proxied endpoint buffers each file, so we also warn
-// past a size where that path gets slow; the direct-to-S3 path is a follow-up.
+// Upload files in bounded parallel batches — never one-at-a-time (a data room
+// is hundreds of files). Bytes move direct-to-S3 by default, with a per-file
+// proxied fallback — see `transport.ts` for the path decision.
 const CONCURRENCY = 5
-const LARGE_FILE_WARN = 100 * 1024 * 1024
 
 interface UploadResult {
   item: UploadItem
@@ -50,20 +49,21 @@ export async function uploadCommand(
 
   output.info(`Uploading ${items.length} file${items.length === 1 ? '' : 's'}…`)
 
+  const mode = await resolveUploadMode(client, roomId)
+  if (mode === 'proxied' && !process.env.MAGE_UPLOAD_MODE) {
+    output.warn('This network blocks direct-to-storage uploads; using the slower fallback path.')
+  }
+
   const results: UploadResult[] = []
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY)
     const settled = await Promise.allSettled(
       batch.map(async (item) => {
-        const content = readFileSync(item.absPath)
-        if (content.byteLength > LARGE_FILE_WARN) {
-          output.warn(`${item.filename} is large (${formatBytes(content.byteLength)}); this may be slow.`)
+        const { doc, transport } = await uploadFile(client, roomId, item, mode)
+        if (mode === 'direct' && transport === 'proxied') {
+          output.warn(`${item.filename}: direct upload failed mid-file; retried via the fallback path.`)
         }
-        return client.uploadDocument(roomId, {
-          filename: item.filename,
-          content,
-          folderPath: item.folderPath,
-        })
+        return doc
       }),
     )
     settled.forEach((settledItem, idx) => {

@@ -66,6 +66,7 @@ The CLI discovers which room the key belongs to on first use, so the key is all 
 | `MAGE_API_URL` | Override the API base URL (default `https://api-dataroom.magelegal.com`) |
 | `MAGE_ROOM_ID` | Pin the room id (otherwise resolved from the key) |
 | `MAGE_OAUTH_CLIENT_ID` | Override the OAuth client id (rare — it is discovered from the API) |
+| `MAGE_UPLOAD_MODE` | Force the upload transport: `direct` (straight to storage, the default when the network allows it) or `proxied` (through the API). Unset, the CLI probes once per run and picks automatically |
 
 ## Commands
 
@@ -103,7 +104,7 @@ mage upload ./diligence
 mage upload ./diligence --to "01-Diligence"
 ```
 
-Uploads run in parallel. Dotfiles (`.DS_Store`, `.git`, …) are skipped. Files begin processing on arrival; `mage ls` shows their status.
+Uploads run in parallel. Every file in the walked tree is uploaded, including hidden files. Files begin processing on arrival; `mage ls` shows their status.
 
 ### Readiness
 
@@ -184,6 +185,24 @@ mage readiness --json
 An example task to give an agent: *"Pull last year's tax return from our accounting system and satisfy the missing tax items in my Mage data room readiness checklist."*
 
 Beyond readiness, the same key drives the whole room: `mage ls --json` to read the current state, `mage mkdir` to lay out structure, `mage upload ./exports --to "Corporate"` to mirror local files in. Every command speaks `--json`, so an agent can read structured results and decide what to do next.
+
+### As an MCP server
+
+`mage mcp` runs the same surface as a [Model Context Protocol](https://modelcontextprotocol.io) server over stdio, so MCP clients (Claude, Cursor, agent frameworks) can operate the room natively instead of shelling out:
+
+```json
+{
+  "mcpServers": {
+    "mage-dataroom": {
+      "command": "npx",
+      "args": ["-y", "@magelegal/cli", "mcp"],
+      "env": { "MAGE_API_KEY": "sk_…" }
+    }
+  }
+}
+```
+
+Tools: `list_documents`, `upload_documents` (files or whole directories, optionally attached to a checklist item), `get_readiness`, `attach_to_checklist_item`, `create_folder`, and `download_document` (needs the Download permission). Deletion is deliberately not exposed — an agent fills, organizes, and reads a room; removing deal documents stays a human decision.
 
 ## What a key can and cannot do
 

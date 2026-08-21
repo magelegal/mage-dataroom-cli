@@ -1,51 +1,49 @@
 # Mage Data Room CLI
 
-This directory is the source of truth for the **public, open-source** package
-[`@magelegal/cli`](https://www.npmjs.com/package/@magelegal/cli). It is developed
-inside a private monorepo and mirrored automatically to
-[magelegal/mage-dataroom-cli](https://github.com/magelegal/mage-dataroom-cli).
+This directory is the source of truth for a public, open-source npm package. It is
+developed inside a private monorepo and mirrored automatically to its public GitHub repo.
 
-## Everything in this directory becomes public
+## Everything here becomes public
 
-Write every file — code, comments, tests, fixtures, docs — as if it publishes the
-moment you save it, because it does (on the next sync).
+Write every file — code, comments, tests, fixtures, docs — as if it publishes the moment
+you save it, because the next prod promotion publishes it verbatim.
 
-- **No internal names**: no customer, deal, partner, attorney, or vendor names;
-  no competitor names; nothing seen in a live data room or production trace.
-  Invent synthetic examples (`ExampleCo`, `founder@example.com`, `Seed Round`).
-- **No internal infrastructure**: no account IDs, internal hostnames, staging
-  identifiers, secret names, or links to private repos, dashboards, or tickets.
-  The public API hosts (`api-dataroom.magelegal.com`) are fine — they're the
-  product.
-- **No internal context in prose**: comments and docs explain the code, never
-  the internal roadmap, incidents, or systems around it.
-
-A sync-time scanner enforces a denylist, but the scanner is a backstop —
-it cannot recognize a novel name. The rule is the mechanism.
+- **No internal names.** No customer, deal, partner, attorney, vendor, or competitor names,
+  and nothing seen in a live data room or production trace. Invent synthetic examples
+  (`ExampleCo`, `founder@example.com`, `Seed Round`).
+- **No internal infrastructure.** No account ids, internal hostnames, staging identifiers,
+  secret names, or links to private repos, dashboards, or tickets. The public API host is
+  fine — it is the product.
+- **No internal context in prose.** Comments and docs explain the code, never the roadmap,
+  the incidents, or the systems around it.
+- The denylist scan (`.github/dataroom-cli-denylist.txt`) gates PRs and the sync, but it
+  can only match a name someone already wrote down. It is a backstop; the rule is the
+  mechanism.
 
 ## Product scope
 
-Everything here is the **data room** product: commands live in
-`src/commands/dataroom/` and render under the "Data room:" help group. If the
-diligence platform ever grows a CLI surface, it gets `src/commands/diligence/`
-and its own help group. Shared seams (`client`, `config`, `session`, `output`,
-`prompt`) stay product-neutral.
+Everything here is the data room product: commands live in `src/commands/dataroom` and
+render under the "Data room:" help group. If the diligence platform ever grows a CLI
+surface it gets `src/commands/diligence` and its own help group. Shared seams (`client`,
+`config`, `session`, `output`, `prompt`) stay product-neutral.
 
 ## Development
 
 ```bash
 bun install
-bun test          # unit tests
+bun test
 bun run typecheck
-bun run build     # bundles to dist/index.js
+bun run build
 ```
 
-Zero runtime dependencies beyond `commander` + `picocolors`; keep it that way —
-this runs via `npx` on strangers' machines. Node floor is 20 (`engines`); don't
-raise it for a convenience.
+Zero runtime dependencies beyond `commander` and `picocolors` — this runs via `npx` on
+strangers' machines, so keep it that way. The Node floor is 20 in `engines`; don't raise it
+for a convenience.
 
-Releases: bump `version` in package.json; the sync runs on prod promotion
-(monorepo push to `main`), and a new version then gets a `v<version>` tag
-automatically, which the public repo's `release.yml` publishes to npm via
-trusted publishing (OIDC, tokenless). Staging merges do NOT release — a CLI
-version must never precede the prod API it talks to.
+## Releasing
+
+- The mirror runs on prod promotion (a monorepo push to `main`). A bumped `version` in
+  `package.json` gets a version tag automatically, and the public repo's release workflow
+  publishes to npm via trusted publishing (OIDC, tokenless).
+- Staging merges never release. A CLI version must never precede the prod API it talks to,
+  so neither the public repo nor npm can describe a feature prod can't serve.

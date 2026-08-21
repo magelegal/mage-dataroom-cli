@@ -60,6 +60,7 @@ export async function promptHidden(query: string): Promise<string> {
   }
   return new Promise<string>((resolve) => {
     const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true })
+    // biome-ignore lint/plugin: Node's readline muting hook `_writeToOutput` is an undocumented internal with no public typing, so the Interface type must be asserted to reach it
     const mutable = rl as unknown as {
       _writeToOutput?: (s: string) => void
       output: NodeJS.WritableStream

@@ -157,6 +157,130 @@ test('a JSON error body becomes an ApiError carrying status + detail', async () 
   }
 })
 
+test('a connection that never establishes reports "Could not reach"', async () => {
+  responder = () => {
+    throw new TypeError('fetch failed', {
+      cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), {
+        code: 'ECONNREFUSED',
+      }),
+    })
+  }
+  const client = new MageClient('https://api.example.com', 'k')
+
+  try {
+    await client.listDocuments('room1')
+    throw new Error('expected a rejection')
+  } catch (err) {
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).detail).toContain('Could not reach https://api.example.com')
+    expect((err as ApiError).detail).toContain('ECONNREFUSED')
+  }
+})
+
+test('a connection dropped mid-request does not claim the API is unreachable', async () => {
+  // undici's shape when the server (or a hop in between) tears the connection
+  // down while the request body is still in flight — the failure large uploads
+  // hit on unstable network paths. The API answered the dial, so "could not
+  // reach" would be a lie that sends the user to a status page.
+  responder = () => {
+    throw new TypeError('fetch failed', {
+      cause: Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' }),
+    })
+  }
+  const client = new MageClient('https://api.example.com', 'k')
+
+  try {
+    await client.listDocuments('room1')
+    throw new Error('expected a rejection')
+  } catch (err) {
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).detail).not.toContain('Could not reach')
+    expect((err as ApiError).detail).toContain('interrupted')
+    expect((err as ApiError).detail).toContain('https://api.example.com')
+    expect((err as ApiError).detail).toContain('other side closed')
+  }
+})
+
+test('initiateDocumentUpload posts the camelCase plan request and reads the plan', async () => {
+  responder = () =>
+    new Response(
+      JSON.stringify({
+        uploadId: 'u1',
+        s3Key: 'rooms/room1/x.pdf',
+        chunkSize: 5,
+        totalParts: 2,
+        presignedUrls: { '1': 'https://storage.example/p1', '2': 'https://storage.example/p2' },
+        expiresIn: 3600,
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  const client = new MageClient('https://api.example.com', 'k')
+
+  const plan = await client.initiateDocumentUpload('room1', { filename: 'x.pdf', fileSize: 10 })
+
+  expect(plan.uploadId).toBe('u1')
+  expect(plan.presignedUrls['2']).toBe('https://storage.example/p2')
+  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/initiate')
+  expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+    filename: 'x.pdf',
+    fileSize: 10,
+    contentType: 'application/octet-stream',
+  })
+})
+
+test('completeDocumentUpload posts parts + hash + folder and reads the document', async () => {
+  responder = () =>
+    new Response(JSON.stringify({ id: 'd2', name: 'x.pdf', status: 'processing' }), {
+      status: 201,
+      headers: { 'content-type': 'application/json' },
+    })
+  const client = new MageClient('https://api.example.com', 'k')
+
+  const doc = await client.completeDocumentUpload('room1', 'u1', {
+    parts: [{ partNumber: 1, etag: 'abc' }],
+    fileHash: 'deadbeef',
+    folderPath: 'Legal',
+  })
+
+  expect(doc.id).toBe('d2')
+  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/u1/complete')
+  expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
+    parts: [{ partNumber: 1, etag: 'abc' }],
+    fileHash: 'deadbeef',
+    folderPath: 'Legal',
+  })
+})
+
+test('signDocumentUploadPart posts the part number and reads the fresh URL', async () => {
+  responder = () =>
+    new Response(JSON.stringify({ presignedUrl: 'https://storage.example/fresh', expiresIn: 3600 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  const client = new MageClient('https://api.example.com', 'k')
+
+  const signed = await client.signDocumentUploadPart('room1', 'u1', 3)
+
+  expect(signed.presignedUrl).toBe('https://storage.example/fresh')
+  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/u1/sign-part')
+  expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ partNumber: 3 })
+})
+
+test('getUploadProbe mints the connectivity probe target', async () => {
+  responder = () =>
+    new Response(
+      JSON.stringify({ url: 'https://storage.example/probe', key: 'probes/x', expiresIn: 60, byteLength: 8 }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  const client = new MageClient('https://api.example.com', 'k')
+
+  const probe = await client.getUploadProbe('room1')
+
+  expect(probe.byteLength).toBe(8)
+  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/upload-probe')
+  expect(calls[0]!.init.method).toBe('POST')
+})
+
 test('getDocumentUrl mints an audited download URL for one document', async () => {
   responder = () =>
     new Response(JSON.stringify({ url: 'https://s3/presigned', isPdfDerivative: false }), {

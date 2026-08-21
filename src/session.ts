@@ -17,7 +17,7 @@ import { ApiError, fetchAuthConfig } from './client'
 import type { ResolvedSettings, StoredOAuth } from './config'
 import { loadConfig, updateConfig } from './config'
 import { CliError } from './context'
-import type { TokenGrant } from './workos'
+import type { DeviceAuthorization, TokenGrant } from './workos'
 import {
   OAuthError,
   decodeJwtExp,
@@ -85,6 +85,26 @@ export function browserCommand(url: string, platform: NodeJS.Platform): { cmd: s
   return null
 }
 
+/**
+ * Explain the device-code comparison in terms of the terminal that owns it.
+ * Agent-run commands can hide that terminal inside a running task.
+ */
+export function deviceApprovalInstructions(
+  device: Pick<DeviceAuthorization, 'user_code' | 'verification_uri_complete'>,
+  openBrowser: boolean,
+): string {
+  return (
+    `\n  Code shown in this terminal: ${device.user_code}\n` +
+    `  Compare it with the code in the browser.\n` +
+    `  If an AI agent ran this command, ask it to show you this code in chat.\n` +
+    `  Only approve the browser prompt if both codes match.\n\n` +
+    (openBrowser
+      ? `  Opening ${device.verification_uri_complete}\n  (if the browser didn't open, visit that URL yourself)\n\n`
+      : `  Visit ${device.verification_uri_complete}\n  (on any device — your phone works too)\n\n`) +
+    `  Waiting for approval…`
+  )
+}
+
 /** Best-effort `open <url>`; a browser that won't open is never fatal — the URL is printed. */
 function tryOpenBrowser(url: string): void {
   const opener = browserCommand(url, process.platform)
@@ -111,13 +131,7 @@ function isRemoteShell(): boolean {
 async function runInteractiveDeviceFlow(clientId: string, opts: { noBrowser?: boolean } = {}): Promise<TokenGrant> {
   const device = await startDeviceAuthorization(clientId)
   const openBrowser = !opts.noBrowser && !isRemoteShell()
-  process.stderr.write(
-    `\n  First, confirm this code matches your browser: ${device.user_code}\n\n` +
-      (openBrowser
-        ? `  Opening ${device.verification_uri_complete}\n  (if the browser didn't open, visit that URL yourself)\n\n`
-        : `  Visit ${device.verification_uri_complete}\n  (on any device — your phone works too)\n\n`) +
-      `  Waiting for approval…`,
-  )
+  process.stderr.write(deviceApprovalInstructions(device, openBrowser))
   if (openBrowser) tryOpenBrowser(device.verification_uri_complete)
   try {
     // A dim dot per poll so the wait visibly breathes.

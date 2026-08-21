@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "com.magelegal/dataroom",
+  "description": "Operate a Mage data room from an AI agent: list, upload, and organize documents, work the readiness checklist, and download files. Key-scoped to one room.",
+  "repository": {
+    "url": "https://github.com/magelegal/mage-dataroom-cli",
+    "source": "github"
+  },
+  "version": "0.5.1",
+  "packages": [
+    {
+      "registry_type": "npm",
+      "identifier": "@magelegal/cli",
+      "version": "0.5.1",
+      "transport": { "type": "stdio" },
+      "runtime_hint": "npx",
+      "package_arguments": [{ "type": "positional", "value": "mcp" }],
+      "environment_variables": [
+        {
+          "name": "MAGE_API_KEY",
+          "description": "Room-scoped API key (mint one under Settings → API keys in your data room)",
+          "is_required": true,
+          "is_secret": true
+        }
+      ]
+    }
+  ]
+}

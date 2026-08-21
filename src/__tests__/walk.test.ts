@@ -10,20 +10,32 @@ test('joinFolder normalizes slashes and drops empties', () => {
   expect(joinFolder('', null, undefined)).toBeNull()
 })
 
-test('collectUploads mirrors a directory tree under --to and skips dotfiles', () => {
+test('collectUploads mirrors a directory tree under --to, including hidden files', () => {
   const root = mkdtempSync(join(tmpdir(), 'mage-walk-'))
   writeFileSync(join(root, 'a.pdf'), 'a')
   mkdirSync(join(root, 'Corp'))
   writeFileSync(join(root, 'Corp', 'b.pdf'), 'b')
   writeFileSync(join(root, '.DS_Store'), 'junk')
+  mkdirSync(join(root, '.git', 'objects'), { recursive: true })
+  writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main')
+  writeFileSync(join(root, '.git', 'objects', 'pack-1'), 'obj')
+  writeFileSync(join(root, 'Corp', '.hidden-note.txt'), 'note')
 
-  const items = collectUploads(root, 'Legal').sort((x, y) => x.filename.localeCompare(y.filename))
+  const items = collectUploads(root, 'Legal')
   rmSync(root, { recursive: true, force: true })
 
-  expect(items.map((i) => [i.filename, i.folderPath])).toEqual([
-    ['a.pdf', 'Legal'],
-    ['b.pdf', 'Legal/Corp'],
-  ])
+  const pairs = items.map((i) => [i.filename, i.folderPath])
+  expect(pairs).toHaveLength(6)
+  expect(pairs).toEqual(
+    expect.arrayContaining([
+      ['.DS_Store', 'Legal'],
+      ['HEAD', 'Legal/.git'],
+      ['pack-1', 'Legal/.git/objects'],
+      ['.hidden-note.txt', 'Legal/Corp'],
+      ['a.pdf', 'Legal'],
+      ['b.pdf', 'Legal/Corp'],
+    ]),
+  )
 })
 
 test('collectUploads of a single file files it under --to', () => {

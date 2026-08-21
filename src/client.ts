@@ -96,6 +96,34 @@ export interface MintedApiKey {
   createdAt: string
 }
 
+/** Presigned plan for one document's direct-to-S3 multipart upload. The client
+    slices the file into `totalParts` chunks of `chunkSize` bytes and PUTs each
+    to its URL in `presignedUrls` (keyed by 1-based part number — JSON object
+    keys, so strings on the wire). */
+export interface DocUploadPlan {
+  uploadId: string
+  s3Key: string
+  chunkSize: number
+  totalParts: number
+  presignedUrls: Record<string, string>
+  expiresIn: number
+}
+
+/** One uploaded part's identity, echoed back to assemble the object. */
+export interface DocUploadPart {
+  partNumber: number
+  etag: string
+}
+
+/** Presigned PUT target for the direct-to-S3 connectivity probe. The URL is
+    signed for exactly `byteLength` bytes — send precisely that many. */
+export interface UploadProbe {
+  url: string
+  key: string
+  expiresIn: number
+  byteLength: number
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -104,6 +132,63 @@ export class ApiError extends Error {
     super(detail)
     this.name = 'ApiError'
   }
+}
+
+// Error codes that mean the connection was never established — DNS, refused,
+// unreachable, or a connect-phase timeout. Only these justify "could not
+// reach"; anything after the connect (a reset, a broken pipe, a TLS failure
+// mid-stream) means the service answered the dial and something interrupted
+// the request in flight — usually a proxy, VPN, or unstable network, not an
+// outage. Reporting those as "could not reach" sends the user to a status
+// page when the actionable fix is their network path or a retry.
+const NEVER_CONNECTED_CODES = new Set([
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+])
+
+/** Deepest cause with a message — undici wraps the real failure in layers of
+    generic "fetch failed" TypeErrors. */
+function rootCause(err: Error): { code?: string; message: string } {
+  let code: string | undefined
+  let message = err.message
+  let cursor: unknown = err
+  while (cursor instanceof Error) {
+    const c = (cursor as Error & { code?: string }).code
+    if (typeof c === 'string' && c.length > 0) code = c
+    if (cursor.message) message = cursor.message
+    cursor = cursor.cause
+  }
+  return { code, message }
+}
+
+/** One terse line for the parenthetical — TLS and socket errors carry
+    multi-line library internals no user should have to read. */
+function describeCause(code: string | undefined, message: string): string {
+  const firstLine = (message.split('\n')[0] ?? '').trim()
+  if (code && (firstLine.length > 80 || firstLine.length === 0)) return code
+  if (code && !firstLine.includes(code)) return `${code}: ${firstLine}`
+  return firstLine || 'unknown error'
+}
+
+/** Translate a thrown `fetch` into an ApiError whose message tells the truth
+    about WHERE the request died. */
+export function toFetchApiError(baseUrl: string, err: Error): ApiError {
+  const { code, message } = rootCause(err)
+  const cause = describeCause(code, message)
+  if (code && NEVER_CONNECTED_CODES.has(code)) {
+    return new ApiError(0, `Could not reach ${baseUrl} (${cause})`)
+  }
+  return new ApiError(
+    0,
+    `The connection to ${baseUrl} was interrupted before a response arrived (${cause}). ` +
+      `The service is likely up — a proxy, VPN, or unstable network can break ` +
+      `requests mid-flight. Try again.`,
+  )
 }
 
 const API_PREFIX = '/api/v1/lite'
@@ -145,8 +230,7 @@ export class MageClient {
     try {
       res = await fetch(`${this.baseUrl}${API_PREFIX}${path}`, { method, headers, body })
     } catch (err) {
-      // Network / DNS / TLS failure — never reached the API.
-      throw new ApiError(0, `Could not reach ${this.baseUrl} (${(err as Error).message})`)
+      throw toFetchApiError(this.baseUrl, err as Error)
     }
 
     if (!res.ok) throw await toApiError(res)
@@ -187,6 +271,56 @@ export class MageClient {
     // is not camelCased like the body endpoints below.
     if (file.folderPath) form.append('folder_path', file.folderPath)
     return this.request<DocumentSummary>('POST', `/rooms/${roomId}/documents`, { body: form })
+  }
+
+  // ── Direct-to-S3 multipart upload (the bytes never transit the API) ──────
+
+  /** Begin a direct-to-S3 multipart upload; returns the full presigned plan. */
+  initiateDocumentUpload(
+    roomId: string,
+    file: { filename: string; fileSize: number; contentType?: string },
+  ): Promise<DocUploadPlan> {
+    return this.request<DocUploadPlan>('POST', `/rooms/${roomId}/documents/initiate`, {
+      json: {
+        filename: file.filename,
+        fileSize: file.fileSize,
+        contentType: file.contentType || 'application/octet-stream',
+      },
+    })
+  }
+
+  /** Re-presign one part whose URL expired (or was missing) mid-upload. */
+  signDocumentUploadPart(
+    roomId: string,
+    uploadId: string,
+    partNumber: number,
+  ): Promise<{ presignedUrl: string; expiresIn: number }> {
+    return this.request<{ presignedUrl: string; expiresIn: number }>(
+      'POST',
+      `/rooms/${roomId}/documents/${uploadId}/sign-part`,
+      { json: { partNumber } },
+    )
+  }
+
+  /** Assemble the uploaded parts and create the room document. `fileHash` is
+      the SHA-256 hex digest of the file, so content dedup works exactly as it
+      does on the proxied path (where the server hashes the body itself). */
+  completeDocumentUpload(
+    roomId: string,
+    uploadId: string,
+    body: { parts: DocUploadPart[]; fileHash?: string; folderPath?: string | null },
+  ): Promise<DocumentSummary> {
+    return this.request<DocumentSummary>(
+      'POST',
+      `/rooms/${roomId}/documents/${uploadId}/complete`,
+      { json: { parts: body.parts, fileHash: body.fileHash, folderPath: body.folderPath ?? null } },
+    )
+  }
+
+  /** Mint a short-TTL presigned PUT so the caller can test direct-to-S3
+      connectivity before committing to the multipart path. */
+  getUploadProbe(roomId: string): Promise<UploadProbe> {
+    return this.request<UploadProbe>('POST', `/rooms/${roomId}/documents/upload-probe`)
   }
 
   createFolder(roomId: string, folderPath: string): Promise<FolderSet> {
@@ -264,7 +398,7 @@ export async function fetchAuthConfig(baseUrl: string): Promise<{ clientId: stri
       headers: { Accept: 'application/json' },
     })
   } catch (err) {
-    throw new ApiError(0, `Could not reach ${baseUrl} (${(err as Error).message})`)
+    throw toFetchApiError(baseUrl, err as Error)
   }
   if (!res.ok) throw await toApiError(res)
   return (await res.json()) as { clientId: string }

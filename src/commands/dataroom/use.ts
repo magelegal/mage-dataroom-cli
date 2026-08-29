@@ -36,5 +36,5 @@ export async function useCommand(
     output.printJson({ roomId: room.id, roomName: room.name, keyName: minted.name, changed: true })
     return
   }
-  output.success(`Now using "${room.name}" — ${snapshot}.`)
+  output.success(`Now using "${room.name}". ${snapshot}.`)
 }

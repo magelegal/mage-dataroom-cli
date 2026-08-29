@@ -127,9 +127,9 @@ async function browserLogin(
     })
     return
   }
-  output.success(`Bound to "${room.name}" — ${snapshot}.`)
+  output.success(`Bound to "${room.name}". ${snapshot}.`)
   output.info(
-    `  The CLI minted its own key ("CLI — ${hostname()}") — it works until revoked in Settings → API keys.`,
+    `  The CLI minted its own key ("CLI — ${hostname()}"). It works until revoked in Settings → API keys.`,
   )
   if (rooms.length > 1) output.info('  Switch rooms any time with `mage use <room>`.')
   output.info('')

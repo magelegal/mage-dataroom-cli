@@ -43,7 +43,7 @@ function messageFor(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 0) return err.detail
     if (err.status === 401) {
-      return `Unauthorized: ${err.detail}. The key may have been revoked — run \`mage login\` again, or check MAGE_API_KEY.`
+      return `Unauthorized: ${err.detail}. The key may have been revoked. Run \`mage login\` again, or check MAGE_API_KEY.`
     }
     if (err.status === 404) {
       return `Not found: ${err.detail}. The key may be for a different room, or the item no longer exists.`
@@ -51,7 +51,7 @@ function messageFor(err: unknown): string {
     if (err.status === 503) {
       // Key validation rides on an upstream service; a brief outage must never
       // read as "your key is dead".
-      return 'Mage’s key service is briefly unavailable — your key is fine, try again in a minute.'
+      return 'Mage’s key service is briefly unavailable. Your key is fine, try again in a minute.'
     }
     return `API error ${err.status}: ${err.detail}`
   }
@@ -96,7 +96,7 @@ program.addHelpCommand(
 program
   .command('login')
   .helpGroup('Data room:')
-  .argument('[key]', 'API key — skips the browser flow (also read from MAGE_API_KEY)')
+  .argument('[key]', 'API key. Skips the browser flow (also read from MAGE_API_KEY)')
   .option('--room <room>', 'Bind to this room (id or name) without prompting')
   .option('--with-key', 'Paste an API key at a hidden prompt (keeps it out of shell history)')
   .option('--no-browser', 'Print the approval URL instead of opening a browser')
@@ -144,7 +144,7 @@ const readiness = program
 readiness
   .command('attach')
   .argument('<itemId>', 'Checklist item id (from `mage readiness`)')
-  .argument('<documents...>', 'Documents to attach — by id, name, or folder/name')
+  .argument('<documents...>', 'Documents to attach: by id, name, or folder/name')
   .description('Attach already-uploaded documents to a checklist item')
   .action((itemId, documents, _opts, cmd) =>
     run(() => readinessAttachCommand(itemId, documents, cmd.optsWithGlobals())),
@@ -181,7 +181,7 @@ program
 program
   .command('rm')
   .helpGroup('Data room:')
-  .argument('<target>', 'Document name, folder/name, or id — or a folder with --folder')
+  .argument('<target>', 'Document name, folder/name, or id. Or a folder with --folder')
   .option('-r, --folder', 'Delete a folder (its documents move to Unsorted)')
   .option('-y, --yes', 'Skip the confirmation prompt')
   .description('Delete a document, or a folder with --folder')

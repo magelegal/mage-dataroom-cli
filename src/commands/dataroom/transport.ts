@@ -185,7 +185,7 @@ export async function uploadFileProxied(
   const content = readFileSync(item.absPath)
   if (content.byteLength > PROXIED_MAX_FILE_SIZE) {
     throw new Error(
-      `${item.filename} is ${formatBytes(content.byteLength)} — over the ` +
+      `${item.filename} is ${formatBytes(content.byteLength)}. That is over the ` +
         `${formatBytes(PROXIED_MAX_FILE_SIZE)} limit of the fallback upload path. ` +
         `This network blocks direct-to-storage uploads, which carry larger files.`,
     )
@@ -214,7 +214,7 @@ export async function uploadFile(
   if (size === 0) throw new Error(`${item.filename} is empty.`)
   if (size > MAX_FILE_SIZE) {
     throw new Error(
-      `${item.filename} is ${formatBytes(size)} — over the ${formatBytes(MAX_FILE_SIZE)} per-file limit.`,
+      `${item.filename} is ${formatBytes(size)}. That is over the ${formatBytes(MAX_FILE_SIZE)} per-file limit.`,
     )
   }
 

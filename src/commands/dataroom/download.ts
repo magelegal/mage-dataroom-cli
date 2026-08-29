@@ -73,7 +73,7 @@ function friendlyDownloadError(err: unknown): CliError | null {
   }
   if (err.message.includes('nda_required')) {
     return new CliError(
-      'This room requires accepting its NDA first — open the room in your browser to sign it.',
+      'This room requires accepting its NDA first. Open the room in your browser to sign it.',
     )
   }
   return null
@@ -138,7 +138,7 @@ export async function downloadCommand(
   }
 
   if (selected.length === 0) {
-    throw new CliError('Nothing to download — the room has no documents here.')
+    throw new CliError('Nothing to download. The room has no documents here.')
   }
 
   const destRoot = resolve(dest ?? defaultDest)

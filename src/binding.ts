@@ -31,7 +31,7 @@ export async function chooseRoom(rooms: LiteRoom[], selector: string | undefined
     const byName = rooms.filter((r) => r.name.toLowerCase() === wanted.toLowerCase())
     if (byName.length === 1) return byName[0]!
     if (byName.length > 1) {
-      throw new CliError(`Several rooms are named "${wanted}" — pick one by id:\n${roomLines(rooms, undefined)}`)
+      throw new CliError(`Several rooms are named "${wanted}". Pick one by id:\n${roomLines(rooms, undefined)}`)
     }
     throw new CliError(`No room matches "${wanted}". Your rooms:\n${roomLines(rooms, undefined)}`)
   }
@@ -62,7 +62,7 @@ export async function bindRoom(bearer: MageClient, room: LiteRoom, baseUrl: stri
     // "you are not an owner/admin" is the overwhelmingly likely meaning.
     if (err instanceof ApiError && err.status === 404) {
       throw new CliError(
-        `Browser login needs an owner or admin of "${room.name}" — your account is a member.\n` +
+        `Browser login needs an owner or admin of "${room.name}". Your account is a member.\n` +
           `Send your admin this link to mint you a key: ${webAppUrl(baseUrl)}/settings/api-keys\n` +
           'Then run `mage login <key>`.',
       )

@@ -27,7 +27,7 @@ export async function readinessCommand(opts: {
 
   if (!coverage.computed) {
     output.info(
-      'Readiness has not been analyzed yet — it runs after your first documents arrive. Upload something and check back.',
+      'Readiness has not been analyzed yet. It runs after your first documents arrive. Upload something and check back.',
     )
     return
   }
@@ -125,13 +125,13 @@ export function report(
     return
   }
   const label = item?.label ?? itemId
-  const status = item ? ` — now ${item.status.replace('_', ' ')}` : ''
+  const status = item ? `. Now ${item.status.replace('_', ' ')}` : ''
   output.success(
     `Attached ${attachedIds.length} document${attachedIds.length === 1 ? '' : 's'} to "${label}"${status}.`,
   )
   if (coverage.missingRequiredCount > 0) {
     output.info(
-      `${coverage.missingRequiredCount} required item${coverage.missingRequiredCount === 1 ? '' : 's'} still missing — see \`mage readiness\`.`,
+      `${coverage.missingRequiredCount} required item${coverage.missingRequiredCount === 1 ? '' : 's'} still missing. See \`mage readiness\`.`,
     )
   }
 }

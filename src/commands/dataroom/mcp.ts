@@ -181,7 +181,7 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
           documents: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Documents to attach — by id, name, or folder/name',
+            description: 'Documents to attach: by id, name, or folder/name',
           },
         },
         required: ['itemId', 'documents'],
@@ -229,7 +229,7 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
       inputSchema: {
         type: 'object',
         properties: {
-          document: { type: 'string', description: 'The document — by id, name, or folder/name' },
+          document: { type: 'string', description: 'The document: by id, name, or folder/name' },
           destDir: { type: 'string', description: 'Local directory to save into (default: current directory)' },
         },
         required: ['document'],

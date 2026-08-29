@@ -100,7 +100,7 @@ export function deviceApprovalInstructions(
     `  Only approve the browser prompt if both codes match.\n\n` +
     (openBrowser
       ? `  Opening ${device.verification_uri_complete}\n  (if the browser didn't open, visit that URL yourself)\n\n`
-      : `  Visit ${device.verification_uri_complete}\n  (on any device — your phone works too)\n\n`) +
+      : `  Visit ${device.verification_uri_complete}\n  (on any device. Your phone works too)\n\n`) +
     `  Waiting for approval…`
   )
 }

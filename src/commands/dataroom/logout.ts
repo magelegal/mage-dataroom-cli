@@ -37,8 +37,8 @@ export async function logoutCommand(opts: { apiUrl?: string; json?: boolean }): 
   }
   output.success(
     revoked
-      ? 'Logged out — the CLI’s key was revoked and removed from this machine.'
-      : 'Logged out — the credentials were removed from this machine.',
+      ? 'Logged out. The CLI’s key was revoked and removed from this machine.'
+      : 'Logged out. The credentials were removed from this machine.',
   )
   if (!revoked && cfg.apiKey) {
     output.info('To fully revoke a key, delete it in your data room under Settings → API keys.')

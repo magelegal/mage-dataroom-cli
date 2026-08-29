@@ -186,7 +186,7 @@ export function toFetchApiError(baseUrl: string, err: Error): ApiError {
   return new ApiError(
     0,
     `The connection to ${baseUrl} was interrupted before a response arrived (${cause}). ` +
-      `The service is likely up — a proxy, VPN, or unstable network can break ` +
+      `The service is likely up. A proxy, VPN, or unstable network can break ` +
       `requests mid-flight. Try again.`,
   )
 }

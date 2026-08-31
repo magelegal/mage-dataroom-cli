@@ -5,10 +5,18 @@
  *
  * A directory argument uploads its *contents* under `--to` (the wrapper dir name
  * is not repeated), matching how people think about "put this folder's files in
- * the room". Every file the walk finds is included — hidden names are not skipped.
+ * the room".
+ *
+ * The walk skips the bookkeeping files your operating system writes for itself
+ * and hides from you — `.DS_Store`, `Thumbs.db`, `__MACOSX/`, Office lock
+ * files — so the room holds what you see in the folder and nothing else. See
+ * `junk.ts`; dotfiles you made on purpose (`.env`, `.gitignore`) still upload.
+ * A path you name DIRECTLY is always uploaded: naming it is how you say you
+ * can see it.
  */
 import { readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { isJunkSegment } from './junk'
 
 export interface UploadItem {
   absPath: string
@@ -40,6 +48,10 @@ export function collectUploads(inputPath: string, toFolder: string | null): Uplo
   const items: UploadItem[] = []
   const walk = (dir: string, relFolder: string | null): void => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      // Tested by NAME, before the entry is used for anything: a junk
+      // directory is not descended into either, so a `__MACOSX` tree costs
+      // one check rather than an upload per stub.
+      if (isJunkSegment(entry.name)) continue
       const abs = join(dir, entry.name)
       if (entry.isDirectory()) {
         walk(abs, joinFolder(relFolder, entry.name))

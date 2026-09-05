@@ -11,11 +11,12 @@
  * decision in the CLI (`mage rm`) or the web app.
  */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve as resolvePath, sep } from 'node:path'
 import type { DocumentSummary } from '../../client'
 import { buildContext, CliError, type RunContext } from '../../context'
 import { McpServer, type McpTool } from '../../mcp'
 import { collectUploads, joinFolder, type UploadItem } from '../../walk'
+import { safeLocalPath } from './download'
 import { attachToItem } from './readiness'
 import { resolveDocument } from './rm'
 
@@ -245,7 +246,16 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
         if (!res.ok) throw new CliError(`Download failed (HTTP ${res.status}).`)
         const destDir = typeof args.destDir === 'string' && args.destDir ? args.destDir : '.'
         mkdirSync(destDir, { recursive: true })
-        const savedTo = join(destDir, doc.name)
+        // A document's name comes from whoever put it in the room, and a name
+        // the server stores may hold path separators or an absolute prefix.
+        // Strip it to a bare filename, then prove the result still sits under
+        // the folder the caller chose before anything touches the disk.
+        const safeName = safeLocalPath(null, doc.name) || doc.id
+        const root = resolvePath(destDir)
+        const savedTo = join(destDir, safeName)
+        if (resolvePath(savedTo) !== root && !resolvePath(savedTo).startsWith(root + sep)) {
+          throw new CliError("That document's name can't be saved inside the chosen folder.")
+        }
         writeFileSync(savedTo, new Uint8Array(await res.arrayBuffer()))
         return { savedTo, documentId: doc.id, name: doc.name }
       },

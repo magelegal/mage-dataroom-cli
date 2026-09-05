@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve as resolvePath, sep } from 'node:path'
 import type { Coverage, DocumentSummary } from '../client'
 import type { RunContext } from '../context'
 import { McpServer, type McpTool } from '../mcp'
@@ -254,6 +257,71 @@ test('upload_documents validates paths before resolving the room', async () => {
     'non-empty array',
   )
   expect(resolved).toBe(false)
+})
+
+// ── download_document containment ────────────────────────────────────────────
+// A document's name comes from whoever put it in the room, and a name the
+// server stores may hold path separators or an absolute prefix. Every download
+// lands inside the folder the caller asked for.
+
+const DOWNLOAD_BODY = 'the bytes'
+
+/** Run `download_document` for a document with this name, into this folder. */
+async function downloadInto(name: string, destDir: string): Promise<string> {
+  const tools = buildTools({}, async () =>
+    stubContext({
+      listDocuments: async () => [{ ...DOCS[0]!, id: 'doc-9', name, folderPath: null }],
+      getDocumentUrl: async () => ({ url: 'https://files.example.com/doc-9', isPdfDerivative: false }),
+    }),
+  )
+  const previousFetch = globalThis.fetch
+  globalThis.fetch = (async () => new Response(DOWNLOAD_BODY)) as unknown as typeof fetch
+  try {
+    const result = (await toolByName(tools, 'download_document').handler({
+      document: 'doc-9',
+      destDir,
+    })) as { savedTo: string }
+    return result.savedTo
+  } finally {
+    globalThis.fetch = previousFetch
+  }
+}
+
+test('download_document saves a plain name into the chosen folder', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mage-mcp-download-'))
+  try {
+    const dest = join(root, 'a', 'b')
+    const savedTo = await downloadInto('Charter.pdf', dest)
+    expect(resolvePath(savedTo)).toBe(join(resolvePath(dest), 'Charter.pdf'))
+    expect(readFileSync(savedTo, 'utf8')).toBe(DOWNLOAD_BODY)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('download_document keeps a traversing name inside the chosen folder', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mage-mcp-download-'))
+  try {
+    const dest = join(root, 'a', 'b')
+    const savedTo = await downloadInto('../../escaped.txt', dest)
+    expect(resolvePath(savedTo).startsWith(resolvePath(dest) + sep)).toBe(true)
+    expect(existsSync(join(dest, 'escaped.txt'))).toBe(true)
+    expect(existsSync(join(root, 'escaped.txt'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('download_document keeps an absolute name inside the chosen folder', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mage-mcp-download-'))
+  try {
+    const dest = join(root, 'dest')
+    const savedTo = await downloadInto(join(root, 'absolute.txt'), dest)
+    expect(resolvePath(savedTo)).toBe(join(resolvePath(dest), 'absolute.txt'))
+    expect(existsSync(join(root, 'absolute.txt'))).toBe(false)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('the room context is resolved once and cached across tool calls', async () => {

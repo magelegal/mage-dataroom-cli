@@ -66,7 +66,6 @@ The CLI discovers which room the key belongs to on first use, so the key is all 
 | `MAGE_API_URL` | Override the API base URL (default `https://api-dataroom.magelegal.com`) |
 | `MAGE_ROOM_ID` | Pin the room id (otherwise resolved from the key) |
 | `MAGE_OAUTH_CLIENT_ID` | Override the OAuth client id (rare — it is discovered from the API) |
-| `MAGE_UPLOAD_MODE` | Force the upload transport: `direct` (straight to storage, the default when the network allows it) or `proxied` (through the API). Unset, the CLI probes once per run and picks automatically |
 
 ## Commands
 

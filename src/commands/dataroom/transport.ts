@@ -1,6 +1,6 @@
 /**
- * How `mage upload` moves bytes: direct-to-S3 multipart by default, with the
- * proxied whole-body POST as the fallback.
+ * How `mage upload` moves bytes: direct-to-storage multipart, one part at a
+ * time, with the API as the second road for a part storage never answered.
  *
  * The direct path PUTs each file straight to storage against presigned part
  * URLs, then asks the API to assemble it — the same transport the web app
@@ -11,87 +11,75 @@
  * its own, so a flaky hop costs a re-sent part instead of the upload.
  *
  * Some locked-down networks (VPNs, forward proxies, DLP appliances) silently
- * block direct PUTs to storage. A short connectivity probe — one tiny PUT to a
- * throwaway presigned URL — decides the path once per invocation; a probe
- * failure selects the proxied fallback, and a mid-file storage failure on the
- * direct path falls back per-file the same way.
+ * block direct PUTs to storage. The evidence is a part PUT that gets no
+ * response at all: that part goes to the API's relay route instead, which
+ * writes it to the same upload, and the rest of this run's parts follow it
+ * there. A relayed part that also gets no response unpins the run, because a
+ * machine that is simply offline fails both roads alike. A storage answer,
+ * such as a 403 for an expired URL, is never that evidence: it re-signs.
  */
 import { createHash } from 'node:crypto'
-import { createReadStream, readFileSync } from 'node:fs'
+import { createReadStream } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
-import type { DocumentSummary, DocUploadPart, MageClient } from '../../client'
+import { ApiError, type DocumentSummary, type DocUploadPart, type MageClient } from '../../client'
 import { formatBytes, type UploadItem } from '../../walk'
-
-export type UploadMode = 'direct' | 'proxied'
 
 // PAIRED LIMIT: the server enforces the same per-file ceiling on the initiate
 // endpoint; checking here turns a doomed upload into an instant, clear error.
 export const MAX_FILE_SIZE = 100 * 1024 * 1024 * 1024 // 100GB
-// PAIRED LIMIT: the server's body ceiling on the proxied document POST. Only
-// the fallback path is bound by it — direct multipart carries files to the
-// full MAX_FILE_SIZE.
-export const PROXIED_MAX_FILE_SIZE = 5 * 1024 * 1024 * 1024 // 5GB
 
-// The probe PUTs a few bytes to storage; a locked-down proxy usually hangs
-// rather than rejecting outright, so cap the wait tightly.
-const PROBE_TIMEOUT_MS = 4000
 const PART_ATTEMPTS = 3
 
-/** A storage-leg failure on the direct path — the signal to fall back to the
-    proxied upload for this file. API-side failures (initiate/complete) are
-    NOT this: the fallback talks to the same API, so they stay fatal. */
-export class DirectUploadUnavailable extends Error {
-  constructor(detail: string) {
-    super(detail)
-    this.name = 'DirectUploadUnavailable'
-  }
+/** Which road this run's parts take. Pinned by a storage PUT that got no
+    response; unpinned by a relayed PUT that got none either. The pin lasts as
+    long as the process: one `mage upload`, or a whole MCP server session, the
+    same lifetime the browser's session pin has. */
+let relayPinned = false
+
+/** Does this run send its parts through the API? */
+export function isRelayPinned(): boolean {
+  return relayPinned
 }
 
-/**
- * Decide the upload path for this invocation.
- *
- * `MAGE_UPLOAD_MODE=direct|proxied` skips the probe (a user on a network they
- * already understand shouldn't pay for or depend on a probe). Otherwise probe
- * once: PUT succeeds → direct; PUT fails/times out → proxied; the probe-issue
- * call itself failing → direct — that's an API or auth hiccup, not evidence of
- * a blocked storage path, and the direct path has its own per-file fallback.
- */
-export async function resolveUploadMode(client: MageClient, roomId: string): Promise<UploadMode> {
-  const forced = process.env.MAGE_UPLOAD_MODE?.trim().toLowerCase()
-  if (forced === 'direct' || forced === 'proxied') return forced
-
-  let probe: { url: string; byteLength: number }
-  try {
-    probe = await client.getUploadProbe(roomId)
-  } catch {
-    return 'direct'
-  }
-  try {
-    const res = await fetch(probe.url, {
-      method: 'PUT',
-      // Exactly the byte count the URL was signed for — any other size is a
-      // signature mismatch, which would misread a healthy network as blocked.
-      body: new Uint8Array(probe.byteLength),
-      headers: { 'Content-Type': 'application/octet-stream' },
-      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
-    })
-    return res.ok ? 'direct' : 'proxied'
-  } catch {
-    return 'proxied'
-  }
+/** Tests only: a fresh run starts on the direct road. */
+export function resetRelayPin(): void {
+  relayPinned = false
 }
 
 /** SHA-256 hex digest, streamed so the file is never whole in memory. The
-    server records it at complete so content dedup matches immediately —
-    the proxied path computes the same digest server-side. */
+    server records it at complete so content dedup matches immediately. */
 async function hashFile(absPath: string): Promise<string> {
   const hash = createHash('sha256')
   for await (const chunk of createReadStream(absPath)) hash.update(chunk as Buffer)
   return hash.digest('hex')
 }
 
-/** PUT one part, re-signing once on an expired URL and retrying transient
-    failures. Returns the part's ETag. */
+/** One attempt on the relay road. Returns the ETag, or the reason to try
+    again. A verdict the API issued (a 410 for a forgotten session, a 413)
+    is final and propagates; a relay that got no response unpins the run. */
+async function relayOnce(
+  client: MageClient,
+  roomId: string,
+  uploadId: string,
+  partNumber: number,
+  body: Uint8Array,
+): Promise<{ etag: string } | { retry: string }> {
+  try {
+    return { etag: await client.relayDocumentUploadPart(roomId, uploadId, partNumber, body) }
+  } catch (err) {
+    if (!(err instanceof ApiError)) throw err
+    if (err.status === 0) {
+      relayPinned = false
+      return { retry: err.detail }
+    }
+    if (err.status >= 500) return { retry: err.detail }
+    throw err
+  }
+}
+
+/** PUT one part, re-signing on an expired URL, relaying through the API when
+    storage never answers, and retrying transient failures. Returns the
+    part's ETag. */
 async function putPart(
   client: MageClient,
   roomId: string,
@@ -103,28 +91,39 @@ async function putPart(
   let partUrl = url
   let lastFailure = 'part upload failed'
   for (let attempt = 1; attempt <= PART_ATTEMPTS; attempt++) {
+    if (relayPinned) {
+      const relayed = await relayOnce(client, roomId, uploadId, partNumber, body)
+      if ('etag' in relayed) return relayed.etag
+      lastFailure = relayed.retry
+      continue
+    }
     if (!partUrl) {
       // Missing or expired URL — ask the API for a fresh one. An API failure
-      // here propagates: the fallback path would hit the same API.
+      // here propagates.
       partUrl = (await client.signDocumentUploadPart(roomId, uploadId, partNumber)).presignedUrl
     }
+    let res: Response
     try {
-      const res = await fetch(partUrl, { method: 'PUT', body })
-      if (res.ok) {
-        // S3 returns the ETag quoted; the API echoes it back unquoted.
-        const etag = res.headers.get('etag')?.replace(/"/g, '')
-        if (etag) return etag
-        lastFailure = 'storage returned no ETag for the uploaded part'
-      } else {
-        lastFailure = `storage rejected part ${partNumber} (HTTP ${res.status})`
-        // A 403 is an expired presign — drop the URL so the next attempt re-signs.
-        if (res.status === 403) partUrl = undefined
-      }
+      res = await fetch(partUrl, { method: 'PUT', body })
     } catch (err) {
+      // No response at all: the network in between refused a direct write.
+      // This part, and the run's later parts, go through the API instead.
+      relayPinned = true
       lastFailure = (err as Error).message
+      continue
+    }
+    if (res.ok) {
+      // S3 returns the ETag quoted; the API echoes it back unquoted.
+      const etag = res.headers.get('etag')?.replace(/"/g, '')
+      if (etag) return etag
+      lastFailure = 'storage returned no ETag for the uploaded part'
+    } else {
+      lastFailure = `storage rejected part ${partNumber} (HTTP ${res.status})`
+      // A 403 is an expired presign — drop the URL so the next attempt re-signs.
+      if (res.status === 403) partUrl = undefined
     }
   }
-  throw new DirectUploadUnavailable(lastFailure)
+  throw new Error(lastFailure)
 }
 
 /** Upload one file via direct-to-S3 multipart: initiate → PUT parts → complete. */
@@ -176,40 +175,12 @@ export async function uploadFileDirect(
   })
 }
 
-/** Upload one file via the proxied whole-body POST (the fallback path). */
-export async function uploadFileProxied(
-  client: MageClient,
-  roomId: string,
-  item: UploadItem,
-): Promise<DocumentSummary> {
-  const content = readFileSync(item.absPath)
-  if (content.byteLength > PROXIED_MAX_FILE_SIZE) {
-    throw new Error(
-      `${item.filename} is ${formatBytes(content.byteLength)}. That is over the ` +
-        `${formatBytes(PROXIED_MAX_FILE_SIZE)} limit of the fallback upload path. ` +
-        `This network blocks direct-to-storage uploads, which carry larger files.`,
-    )
-  }
-  return client.uploadDocument(roomId, {
-    filename: item.filename,
-    content,
-    folderPath: item.folderPath,
-  })
-}
-
-/**
- * Upload one file on the resolved path. On `direct`, a storage-leg failure
- * falls back to the proxied POST for this file (the API never saw the failed
- * attempt, so nothing was created); API failures propagate unchanged.
- * Returns the created document and which transport carried it, so the caller
- * can surface the downgrade.
- */
+/** Upload one file, refusing an empty or over-ceiling file before any request. */
 export async function uploadFile(
   client: MageClient,
   roomId: string,
   item: UploadItem,
-  mode: UploadMode,
-): Promise<{ doc: DocumentSummary; transport: UploadMode }> {
+): Promise<DocumentSummary> {
   const { size } = await stat(item.absPath)
   if (size === 0) throw new Error(`${item.filename} is empty.`)
   if (size > MAX_FILE_SIZE) {
@@ -217,13 +188,5 @@ export async function uploadFile(
       `${item.filename} is ${formatBytes(size)}. That is over the ${formatBytes(MAX_FILE_SIZE)} per-file limit.`,
     )
   }
-
-  if (mode === 'direct') {
-    try {
-      return { doc: await uploadFileDirect(client, roomId, item), transport: 'direct' }
-    } catch (err) {
-      if (!(err instanceof DirectUploadUnavailable)) throw err
-    }
-  }
-  return { doc: await uploadFileProxied(client, roomId, item), transport: 'proxied' }
+  return uploadFileDirect(client, roomId, item)
 }

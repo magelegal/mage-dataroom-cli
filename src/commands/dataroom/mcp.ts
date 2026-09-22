@@ -10,7 +10,7 @@
  * it, organize it, and read it; removing deal documents stays a human
  * decision in the CLI (`mage rm`) or the web app.
  */
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve as resolvePath, sep } from 'node:path'
 import type { DocumentSummary } from '../../client'
 import { buildContext, CliError, type RunContext } from '../../context'
@@ -19,6 +19,7 @@ import { collectUploads, joinFolder, type UploadItem } from '../../walk'
 import { safeLocalPath } from './download'
 import { attachToItem } from './readiness'
 import { resolveDocument } from './rm'
+import { uploadFile } from './transport'
 
 // Matches the CLI upload path: bounded parallelism, never one-at-a-time.
 const CONCURRENCY = 5
@@ -124,13 +125,8 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
         for (let i = 0; i < items.length; i += CONCURRENCY) {
           const batch = items.slice(i, i + CONCURRENCY)
           const settled = await Promise.allSettled(
-            batch.map((item) =>
-              client.uploadDocument(roomId, {
-                filename: item.filename,
-                content: readFileSync(item.absPath),
-                folderPath: item.folderPath,
-              }),
-            ),
+            // The same part-by-part road as `mage upload`, relay included.
+            batch.map((item) => uploadFile(client, roomId, item)),
           )
           settled.forEach((s, idx) => {
             const item = batch[idx]!

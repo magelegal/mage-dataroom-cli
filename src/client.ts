@@ -23,6 +23,9 @@ export interface DocumentSummary {
   version: number
   externalSource: string | null
   createdAt: string
+  /** Set only on an upload's answer: `existing` when the room already held
+   *  this file (same folder, same name, same bytes) and no new row was made. */
+  placement?: 'created' | 'existing' | null
 }
 
 /** What a key resolves to — returned by the room-less `/cli/context` probe. */
@@ -115,15 +118,6 @@ export interface DocUploadPart {
   etag: string
 }
 
-/** Presigned PUT target for the direct-to-S3 connectivity probe. The URL is
-    signed for exactly `byteLength` bytes — send precisely that many. */
-export interface UploadProbe {
-  url: string
-  key: string
-  expiresIn: number
-  byteLength: number
-}
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -193,11 +187,20 @@ export function toFetchApiError(baseUrl: string, err: Error): ApiError {
 
 const API_PREFIX = '/api/v1/lite'
 
+// Baked in at build time (tsup `define`); absent when the source runs directly.
+declare const __VERSION__: string
+
+/** `@magelegal/cli/<version>`: every call to the API names the CLI build that
+    made it. Read per call, so a run from source reads as a dev build. */
+function userAgent(): string {
+  return `@magelegal/cli/${typeof __VERSION__ === 'undefined' ? '0.0.0-dev' : __VERSION__}`
+}
+
 /** How this client authenticates: a room key (data plane) or a user JWT (control plane). */
 export type ClientAuth = { kind: 'apiKey'; key: string } | { kind: 'bearer'; token: string }
 
 interface RequestInit_ {
-  body?: string | FormData
+  body?: string
   json?: unknown
   expectEmpty?: boolean
 }
@@ -213,13 +216,19 @@ export class MageClient {
     this.auth = typeof auth === 'string' ? { kind: 'apiKey', key: auth } : auth
   }
 
-  private async request<T>(method: string, path: string, init: RequestInit_ = {}): Promise<T> {
-    const headers: Record<string, string> = {
+  /** The headers every call to the API carries: this client's credential and
+      the CLI build that made the call. */
+  private baseHeaders(): Record<string, string> {
+    return {
       ...(this.auth.kind === 'apiKey'
         ? { 'X-API-Key': this.auth.key }
         : { Authorization: `Bearer ${this.auth.token}` }),
-      Accept: 'application/json',
+      'User-Agent': userAgent(),
     }
+  }
+
+  private async request<T>(method: string, path: string, init: RequestInit_ = {}): Promise<T> {
+    const headers: Record<string, string> = { ...this.baseHeaders(), Accept: 'application/json' }
     let body = init.body
     if (init.json !== undefined) {
       headers['Content-Type'] = 'application/json'
@@ -260,19 +269,6 @@ export class MageClient {
     )
   }
 
-  uploadDocument(
-    roomId: string,
-    file: { filename: string; content: Uint8Array; contentType?: string; folderPath?: string | null },
-  ): Promise<DocumentSummary> {
-    const form = new FormData()
-    const blob = new Blob([file.content], { type: file.contentType || 'application/octet-stream' })
-    form.append('file', blob, file.filename)
-    // The destination folder is a raw Form field (`folder_path`), not JSON — it
-    // is not camelCased like the body endpoints below.
-    if (file.folderPath) form.append('folder_path', file.folderPath)
-    return this.request<DocumentSummary>('POST', `/rooms/${roomId}/documents`, { body: form })
-  }
-
   // ── Direct-to-S3 multipart upload (the bytes never transit the API) ──────
 
   /** Begin a direct-to-S3 multipart upload; returns the full presigned plan. */
@@ -302,9 +298,38 @@ export class MageClient {
     )
   }
 
+  /** Send one part through the API instead of straight to storage: the
+      second road for a part whose storage PUT got no response. The API writes
+      it to the same upload and answers with the part's ETag, returned here
+      unquoted, as the direct path returns it. */
+  async relayDocumentUploadPart(
+    roomId: string,
+    uploadId: string,
+    partNumber: number,
+    body: Uint8Array,
+  ): Promise<string> {
+    let res: Response
+    try {
+      res = await fetch(
+        `${this.baseUrl}${API_PREFIX}/rooms/${roomId}/documents/${uploadId}/part/${partNumber}`,
+        {
+          method: 'PUT',
+          headers: { ...this.baseHeaders(), 'Content-Type': 'application/octet-stream' },
+          body,
+        },
+      )
+    } catch (err) {
+      throw toFetchApiError(this.baseUrl, err as Error)
+    }
+    if (!res.ok) throw await toApiError(res)
+    const etag = res.headers.get('etag')?.replace(/"/g, '')
+    if (!etag) throw new ApiError(res.status, 'The API returned no ETag for the relayed part')
+    return etag
+  }
+
   /** Assemble the uploaded parts and create the room document. `fileHash` is
       the SHA-256 hex digest of the file, so content dedup works exactly as it
-      does on the proxied path (where the server hashes the body itself). */
+      does on the whole-file POST (where the server hashes the body itself). */
   completeDocumentUpload(
     roomId: string,
     uploadId: string,
@@ -315,12 +340,6 @@ export class MageClient {
       `/rooms/${roomId}/documents/${uploadId}/complete`,
       { json: { parts: body.parts, fileHash: body.fileHash, folderPath: body.folderPath ?? null } },
     )
-  }
-
-  /** Mint a short-TTL presigned PUT so the caller can test direct-to-S3
-      connectivity before committing to the multipart path. */
-  getUploadProbe(roomId: string): Promise<UploadProbe> {
-    return this.request<UploadProbe>('POST', `/rooms/${roomId}/documents/upload-probe`)
   }
 
   createFolder(roomId: string, folderPath: string): Promise<FolderSet> {
@@ -395,7 +414,7 @@ export async function fetchAuthConfig(baseUrl: string): Promise<{ clientId: stri
   let res: Response
   try {
     res = await fetch(`${baseUrl}${API_PREFIX}/cli/auth-config`, {
-      headers: { Accept: 'application/json' },
+      headers: { Accept: 'application/json', 'User-Agent': userAgent() },
     })
   } catch (err) {
     throw toFetchApiError(baseUrl, err as Error)

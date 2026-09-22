@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApiError, MageClient } from '../client'
 import {
-  DirectUploadUnavailable,
-  resolveUploadMode,
+  isRelayPinned,
+  resetRelayPin,
   uploadFile,
   uploadFileDirect,
 } from '../commands/dataroom/transport'
@@ -24,7 +24,6 @@ let calls: Call[]
 /** URL-routed fetch mock: `routes` maps a substring to its handler. */
 let routes: Array<[string, (call: Call) => Response | Promise<Response>]>
 const realFetch = globalThis.fetch
-const realMode = process.env.MAGE_UPLOAD_MODE
 
 let dir: string
 let filePath: string
@@ -55,7 +54,7 @@ function plan(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
-  delete process.env.MAGE_UPLOAD_MODE
+  resetRelayPin()
   calls = []
   routes = []
   globalThis.fetch = (async (url: unknown, init?: { method?: string; body?: unknown }) => {
@@ -73,8 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.fetch = realFetch
-  if (realMode === undefined) delete process.env.MAGE_UPLOAD_MODE
-  else process.env.MAGE_UPLOAD_MODE = realMode
+  resetRelayPin()
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -133,9 +131,13 @@ test('an expired part URL re-signs and retries instead of failing the file', asy
   expect(doc.id).toBe('d1')
   expect(firstPut).toBe(false)
   expect(calls.some((c) => c.url.includes('/sign-part'))).toBe(true)
+  // A 403 is storage answering, so the part stays on the direct road.
+  expect(calls.some((c) => c.url.includes('/documents/u1/part/'))).toBe(false)
+  expect(isRelayPinned()).toBe(false)
 })
 
-test('a storage-leg failure falls back to the proxied POST for that file', async () => {
+test('a part whose storage PUT gets no response is relayed through the API, and the run pins', async () => {
+  const relayed: Array<{ url: string; body: string }> = []
   routes = [
     ['/documents/initiate', () => json(plan())],
     [
@@ -145,93 +147,122 @@ test('a storage-leg failure falls back to the proxied POST for that file', async
       },
     ],
     [
-      '/rooms/room1/documents',
-      () => json({ id: 'd-proxied', name: 'x.pdf', status: 'processing' }, 201),
+      '/rooms/room1/documents/u1/part/',
+      (call) => {
+        relayed.push({ url: call.url, body: Buffer.from(call.body as Uint8Array).toString() })
+        return new Response(null, { status: 200, headers: { etag: `"relay-${relayed.length}"` } })
+      },
     ],
+    ['/documents/u1/complete', () => json({ id: 'd1', name: 'x.pdf', status: 'processing' }, 201)],
   ]
   const client = new MageClient(API, 'k')
 
-  const { doc, transport } = await uploadFile(client, 'room1', item(), 'direct')
+  const doc = await uploadFile(client, 'room1', item())
 
-  expect(doc.id).toBe('d-proxied')
-  expect(transport).toBe('proxied')
-  // The fallback carried the actual bytes as multipart form data.
-  const proxied = calls[calls.length - 1]!
-  expect(proxied.body).toBeInstanceOf(FormData)
+  expect(doc.id).toBe('d1')
+  expect(isRelayPinned()).toBe(true)
+  // Only part 1 ever tried storage: its silence pinned the run, so parts 2
+  // and 3 went straight to the relay.
+  expect(calls.filter((c) => c.url.startsWith(STORAGE)).map((c) => c.url)).toEqual([
+    `${STORAGE}/part/1`,
+  ])
+  expect(relayed).toEqual([
+    { url: `${API}/api/v1/lite/rooms/room1/documents/u1/part/1`, body: '0123' },
+    { url: `${API}/api/v1/lite/rooms/room1/documents/u1/part/2`, body: '4567' },
+    { url: `${API}/api/v1/lite/rooms/room1/documents/u1/part/3`, body: '89' },
+  ])
+  const complete = calls.find((c) => c.url.includes('/complete'))!
+  expect(JSON.parse(complete.body as string).parts).toEqual([
+    { partNumber: 1, etag: 'relay-1' },
+    { partNumber: 2, etag: 'relay-2' },
+    { partNumber: 3, etag: 'relay-3' },
+  ])
 })
 
-test('an API-side failure propagates instead of falling back', async () => {
+test('a relayed part that also gets no response unpins and tries storage again', async () => {
+  let relayAttempts = 0
+  routes = [
+    ['/documents/initiate', () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } }))],
+    [
+      `${STORAGE}/part/1`,
+      () => {
+        // Storage is silent once, then answers: an offline blip, not a firewall.
+        if (calls.filter((c) => c.url.startsWith(STORAGE)).length === 1) {
+          throw new TypeError('fetch failed')
+        }
+        return new Response(null, { status: 200, headers: { etag: '"direct-1"' } })
+      },
+    ],
+    [
+      '/rooms/room1/documents/u1/part/',
+      () => {
+        relayAttempts += 1
+        throw new TypeError('fetch failed')
+      },
+    ],
+    ['/documents/u1/complete', () => json({ id: 'd1', name: 'x.pdf', status: 'processing' }, 201)],
+  ]
+  const client = new MageClient(API, 'k')
+
+  const doc = await uploadFile(client, 'room1', item())
+
+  expect(doc.id).toBe('d1')
+  expect(relayAttempts).toBe(1)
+  expect(isRelayPinned()).toBe(false)
+})
+
+test('an API-side failure propagates', async () => {
   routes = [['/documents/initiate', () => json({ detail: 'File size exceeds the limit' }, 422)]]
   const client = new MageClient(API, 'k')
 
   try {
-    await uploadFile(client, 'room1', item(), 'direct')
+    await uploadFile(client, 'room1', item())
     throw new Error('expected a rejection')
   } catch (err) {
     expect(err).toBeInstanceOf(ApiError)
     expect((err as ApiError).status).toBe(422)
   }
-  // Never attempted the proxied POST — the API is the same on both paths.
-  expect(calls.filter((c) => c.body instanceof FormData)).toHaveLength(0)
+  expect(calls).toHaveLength(1)
 })
 
-test('exhausted part retries surface as DirectUploadUnavailable', async () => {
+test('a relay the API refuses fails the file with the API verdict', async () => {
+  routes = [
+    ['/documents/initiate', () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } }))],
+    [
+      `${STORAGE}/part/1`,
+      () => {
+        throw new TypeError('fetch failed')
+      },
+    ],
+    ['/rooms/room1/documents/u1/part/', () => json({ detail: 'Upload session is gone' }, 410)],
+  ]
+  const client = new MageClient(API, 'k')
+
+  try {
+    await uploadFile(client, 'room1', item())
+    throw new Error('expected a rejection')
+  } catch (err) {
+    expect(err).toBeInstanceOf(ApiError)
+    expect((err as ApiError).status).toBe(410)
+  }
+})
+
+test('exhausted part retries fail the file with the last storage verdict', async () => {
   routes = [
     ['/documents/initiate', () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } }))],
     [`${STORAGE}/part/1`, () => new Response(null, { status: 500 })],
   ]
   const client = new MageClient(API, 'k')
 
-  expect(uploadFileDirect(client, 'room1', item())).rejects.toBeInstanceOf(DirectUploadUnavailable)
+  expect(uploadFileDirect(client, 'room1', item())).rejects.toThrow(
+    'storage rejected part 1 (HTTP 500)',
+  )
 })
 
 test('an empty file fails with a clear message before any request', async () => {
   writeFileSync(filePath, '')
   const client = new MageClient(API, 'k')
 
-  expect(uploadFile(client, 'room1', item(), 'direct')).rejects.toThrow('x.pdf is empty.')
-  expect(calls).toHaveLength(0)
-})
-
-test('resolveUploadMode: probe PUT success → direct, failure → proxied', async () => {
-  const probe = { url: `${STORAGE}/probe`, key: 'probes/x', expiresIn: 60, byteLength: 8 }
-  routes = [
-    ['/upload-probe', () => json(probe)],
-    [
-      `${STORAGE}/probe`,
-      (call) => {
-        // The URL is signed for exactly byteLength bytes.
-        expect((call.body as Uint8Array).byteLength).toBe(8)
-        return new Response(null, { status: 200 })
-      },
-    ],
-  ]
-  const client = new MageClient(API, 'k')
-  expect(await resolveUploadMode(client, 'room1')).toBe('direct')
-
-  routes = [
-    ['/upload-probe', () => json(probe)],
-    [
-      `${STORAGE}/probe`,
-      () => {
-        throw new TypeError('fetch failed')
-      },
-    ],
-  ]
-  expect(await resolveUploadMode(client, 'room1')).toBe('proxied')
-})
-
-test('resolveUploadMode: a probe-issue failure fails open to direct', async () => {
-  routes = [['/upload-probe', () => json({ detail: 'nope' }, 500)]]
-  const client = new MageClient(API, 'k')
-
-  expect(await resolveUploadMode(client, 'room1')).toBe('direct')
-})
-
-test('MAGE_UPLOAD_MODE skips the probe entirely', async () => {
-  process.env.MAGE_UPLOAD_MODE = 'proxied'
-  const client = new MageClient(API, 'k')
-
-  expect(await resolveUploadMode(client, 'room1')).toBe('proxied')
+  expect(uploadFile(client, 'room1', item())).rejects.toThrow('x.pdf is empty.')
   expect(calls).toHaveLength(0)
 })

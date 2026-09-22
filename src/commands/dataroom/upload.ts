@@ -2,18 +2,26 @@ import { buildContext, CliError } from '../../context'
 import * as output from '../../output'
 import { collectUploads, joinFolder, type UploadItem } from '../../walk'
 import { attachToItem, report as reportAttachment } from './readiness'
-import { resolveUploadMode, uploadFile } from './transport'
+import { uploadFile } from './transport'
 
 // Upload files in bounded parallel batches — never one-at-a-time (a data room
-// is hundreds of files). Bytes move direct-to-S3 by default, with a per-file
-// proxied fallback — see `transport.ts` for the path decision.
+// is hundreds of files). Bytes move direct to storage, part by part, and a part
+// storage never answers goes through the API instead — see `transport.ts`.
 const CONCURRENCY = 5
 
 interface UploadResult {
   item: UploadItem
   ok: boolean
   documentId?: string
+  alreadyThere?: boolean
   error?: string
+}
+
+/** The last line of a run that found files already in the room, or null.
+ *  Running the same upload again is safe: those files are left as they are. */
+export function alreadyThereLine(count: number): string | null {
+  if (count === 0) return null
+  return count === 1 ? '1 file was already there.' : `${count} files were already there.`
 }
 
 function label(item: UploadItem): string {
@@ -49,27 +57,21 @@ export async function uploadCommand(
 
   output.info(`Uploading ${items.length} file${items.length === 1 ? '' : 's'}…`)
 
-  const mode = await resolveUploadMode(client, roomId)
-  if (mode === 'proxied' && !process.env.MAGE_UPLOAD_MODE) {
-    output.warn('This network blocks direct-to-storage uploads; using the slower fallback path.')
-  }
-
   const results: UploadResult[] = []
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY)
-    const settled = await Promise.allSettled(
-      batch.map(async (item) => {
-        const { doc, transport } = await uploadFile(client, roomId, item, mode)
-        if (mode === 'direct' && transport === 'proxied') {
-          output.warn(`${item.filename}: direct upload failed mid-file; retried via the fallback path.`)
-        }
-        return doc
-      }),
-    )
+    const settled = await Promise.allSettled(batch.map((item) => uploadFile(client, roomId, item)))
     settled.forEach((settledItem, idx) => {
       const item = batch[idx]!
       if (settledItem.status === 'fulfilled') {
-        results.push({ item, ok: true, documentId: settledItem.value.id })
+        results.push({
+          item,
+          ok: true,
+          documentId: settledItem.value.id,
+          // The room already held this file (same folder, name and bytes),
+          // so no row was made.
+          alreadyThere: settledItem.value.placement === 'existing',
+        })
         output.success(`${label(item)}  →  ${item.folderPath ?? 'Unsorted'}`)
       } else {
         const error =
@@ -82,6 +84,7 @@ export async function uploadCommand(
 
   const uploaded = results.filter((r) => r.ok).length
   const failed = results.length - uploaded
+  const alreadyThere = results.filter((r) => r.alreadyThere).length
   if (!opts.json) {
     output.info(`\nUploaded ${uploaded}/${results.length}${failed ? `, ${failed} failed` : ''}.`)
   }
@@ -98,16 +101,22 @@ export async function uploadCommand(
     }
   }
 
+  // Last, after the checklist line, so a re-run reads its answer at the end.
+  const line = opts.json ? null : alreadyThereLine(alreadyThere)
+  if (line) output.info(line)
+
   if (opts.json) {
     output.printJson({
       uploaded,
       failed,
+      alreadyThere,
       ...(attachment ? { attachedToItem: attachment } : {}),
       results: results.map((r) => ({
         file: r.item.absPath,
         folder: r.item.folderPath,
         ok: r.ok,
         documentId: r.documentId,
+        alreadyThere: r.alreadyThere,
         error: r.error,
       })),
     })

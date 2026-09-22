@@ -1,11 +1,12 @@
 import { expect, test } from 'bun:test'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve as resolvePath, sep } from 'node:path'
-import type { Coverage, DocumentSummary } from '../client'
+import { type Coverage, type DocumentSummary, MageClient } from '../client'
 import type { RunContext } from '../context'
 import { McpServer, type McpTool } from '../mcp'
 import { buildTools } from '../commands/dataroom/mcp'
+import { isRelayPinned, resetRelayPin } from '../commands/dataroom/transport'
 
 // ── Protocol layer ────────────────────────────────────────────────────────────
 
@@ -257,6 +258,117 @@ test('upload_documents validates paths before resolving the room', async () => {
     'non-empty array',
   )
   expect(resolved).toBe(false)
+})
+
+// ── upload_documents transport ───────────────────────────────────────────────
+// The agent's upload rides the same part-by-part road as `mage upload`: a
+// whole-file POST is held to the edge's body cap on a network that blocks
+// storage, and a part sent through the API relay is not.
+
+const API = 'https://api.example.com'
+const STORAGE = 'https://storage.example'
+
+interface RoutedCall {
+  url: string
+  method?: string
+  body?: unknown
+}
+
+/** Run upload_documents on one 10-byte file in a 4-byte-part plan, with
+    storage PUTs answered by `storage`. Returns every fetch the tool made. */
+async function uploadThroughRoutes(storage: () => Response): Promise<{
+  calls: RoutedCall[]
+  result: { uploaded: number; failed: number; results: { documentId?: string; folder: string | null }[] }
+}> {
+  const root = mkdtempSync(join(tmpdir(), 'mage-mcp-upload-'))
+  const calls: RoutedCall[] = []
+  const previousFetch = globalThis.fetch
+  resetRelayPin()
+  globalThis.fetch = (async (url: unknown, init?: { method?: string; body?: unknown }) => {
+    const call: RoutedCall = { url: String(url), method: init?.method, body: init?.body }
+    calls.push(call)
+    if (call.url.includes('/documents/initiate')) {
+      return Response.json({
+        uploadId: 'u1',
+        s3Key: 'rooms/room-1/x.pdf',
+        chunkSize: 4,
+        totalParts: 3,
+        presignedUrls: { '1': `${STORAGE}/part/1`, '2': `${STORAGE}/part/2`, '3': `${STORAGE}/part/3` },
+        expiresIn: 3600,
+      })
+    }
+    if (call.url.startsWith(STORAGE)) return storage()
+    if (call.url.includes('/documents/u1/part/')) {
+      const n = call.url.split('/').pop()
+      return new Response(null, { status: 200, headers: { etag: `"relay-${n}"` } })
+    }
+    if (call.url.includes('/documents/u1/complete')) {
+      return Response.json({ id: 'd1', name: 'x.pdf', status: 'processing' }, { status: 201 })
+    }
+    throw new Error(`unrouted fetch: ${call.url}`)
+  }) as typeof fetch
+  try {
+    mkdirSync(join(root, 'Legal'))
+    writeFileSync(join(root, 'Legal', 'x.pdf'), '0123456789')
+    const context = {
+      client: new MageClient(API, 'k'),
+      roomId: 'room-1',
+      baseUrl: API,
+    } as unknown as RunContext
+    const tools = buildTools({}, async () => context)
+    const result = (await toolByName(tools, 'upload_documents').handler({
+      paths: [join(root, 'Legal')],
+    })) as Awaited<ReturnType<typeof uploadThroughRoutes>>['result']
+    return { calls, result }
+  } finally {
+    globalThis.fetch = previousFetch
+    rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test('upload_documents sends each part straight to storage, never the whole file to the API', async () => {
+  let n = 0
+  const { calls, result } = await uploadThroughRoutes(() => {
+    n += 1
+    return new Response(null, { status: 200, headers: { etag: `"direct-${n}"` } })
+  })
+
+  expect(result.uploaded).toBe(1)
+  expect(result.failed).toBe(0)
+  expect(result.results[0]!.documentId).toBe('d1')
+  expect(calls.filter((c) => c.url.startsWith(STORAGE)).map((c) => c.url)).toEqual([
+    `${STORAGE}/part/1`,
+    `${STORAGE}/part/2`,
+    `${STORAGE}/part/3`,
+  ])
+  // The retired whole-file road: a POST to the room's bare documents route.
+  expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/rooms/room-1/documents'))).toBe(false)
+  const complete = calls.find((c) => c.url.includes('/complete'))!
+  expect(JSON.parse(complete.body as string).parts).toEqual([
+    { partNumber: 1, etag: 'direct-1' },
+    { partNumber: 2, etag: 'direct-2' },
+    { partNumber: 3, etag: 'direct-3' },
+  ])
+})
+
+test('upload_documents relays a part through the API when storage never answers', async () => {
+  const { calls, result } = await uploadThroughRoutes(() => {
+    throw new TypeError('fetch failed')
+  })
+
+  expect(result.uploaded).toBe(1)
+  expect(isRelayPinned()).toBe(true)
+  resetRelayPin()
+  expect(
+    calls
+      .filter((c) => c.url.includes('/documents/u1/part/'))
+      .map((c) => [c.url, Buffer.from(c.body as Uint8Array).toString()]),
+  ).toEqual([
+    [`${API}/api/v1/lite/rooms/room-1/documents/u1/part/1`, '0123'],
+    [`${API}/api/v1/lite/rooms/room-1/documents/u1/part/2`, '4567'],
+    [`${API}/api/v1/lite/rooms/room-1/documents/u1/part/3`, '89'],
+  ])
+  expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/rooms/room-1/documents'))).toBe(false)
 })
 
 // ── download_document containment ────────────────────────────────────────────

@@ -39,33 +39,6 @@ test('listDocuments hits the room path with the X-API-Key header', async () => {
   expect(calls[0]!.init.headers!['X-API-Key']).toBe('mk_live_x')
 })
 
-test('uploadDocument posts multipart with the file and folder_path field', async () => {
-  let captured: Call['init'] | undefined
-  responder = () =>
-    new Response(JSON.stringify({ id: 'd9', name: 'x.pdf', status: 'processing' }), {
-      status: 201,
-      headers: { 'content-type': 'application/json' },
-    })
-  globalThis.fetch = (async (url: unknown, init: unknown) => {
-    captured = init as Call['init']
-    return responder()
-  }) as typeof fetch
-
-  const client = new MageClient('https://api.example.com', 'k')
-  const doc = await client.uploadDocument('room1', {
-    filename: 'x.pdf',
-    content: new TextEncoder().encode('hi'),
-    folderPath: 'Legal',
-  })
-
-  expect(doc.id).toBe('d9')
-  expect(captured!.method).toBe('POST')
-  const body = captured!.body as FormData
-  expect(body).toBeInstanceOf(FormData)
-  expect(body.get('folder_path')).toBe('Legal')
-  expect(body.get('file')).toBeInstanceOf(Blob)
-})
-
 test('createFolder sends folderPath as a JSON body', async () => {
   let captured: Call['init'] | undefined
   globalThis.fetch = (async (_url: unknown, init: unknown) => {
@@ -266,19 +239,17 @@ test('signDocumentUploadPart posts the part number and reads the fresh URL', asy
   expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ partNumber: 3 })
 })
 
-test('getUploadProbe mints the connectivity probe target', async () => {
-  responder = () =>
-    new Response(
-      JSON.stringify({ url: 'https://storage.example/probe', key: 'probes/x', expiresIn: 60, byteLength: 8 }),
-      { status: 200, headers: { 'content-type': 'application/json' } },
-    )
+test('relayDocumentUploadPart PUTs the bytes to the room relay route and returns the unquoted ETag', async () => {
+  responder = () => new Response(null, { status: 200, headers: { etag: '"relayed-3"' } })
   const client = new MageClient('https://api.example.com', 'k')
 
-  const probe = await client.getUploadProbe('room1')
+  const etag = await client.relayDocumentUploadPart('room1', 'u1', 3, new TextEncoder().encode('abc'))
 
-  expect(probe.byteLength).toBe(8)
-  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/upload-probe')
-  expect(calls[0]!.init.method).toBe('POST')
+  expect(etag).toBe('relayed-3')
+  expect(calls[0]!.url).toBe('https://api.example.com/api/v1/lite/rooms/room1/documents/u1/part/3')
+  expect(calls[0]!.init.method).toBe('PUT')
+  expect(calls[0]!.init.headers!['X-API-Key']).toBe('k')
+  expect(calls[0]!.init.headers!['Content-Type']).toBe('application/octet-stream')
 })
 
 test('getDocumentUrl mints an audited download URL for one document', async () => {
@@ -295,4 +266,33 @@ test('getDocumentUrl mints an audited download URL for one document', async () =
     'https://api.example.com/api/v1/lite/rooms/room1/documents/doc1/url?download=true&intent=open',
   )
   expect(calls[0]!.init.headers!['X-API-Key']).toBe('mk_live_key')
+})
+
+test('every call to the API names the CLI build in its User-Agent', async () => {
+  const { version } = (await import('../../package.json')) as { version: string }
+  // The build bakes the version in as `__VERSION__` (tsup `define`); stand the
+  // same global up here so the source run reads what a built run reads.
+  const globals = globalThis as { __VERSION__?: string }
+  globals.__VERSION__ = version
+  try {
+    responder = () =>
+      new Response(JSON.stringify({ clientId: 'client_x' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json', etag: '"e"' },
+      })
+    const keyed = new MageClient('https://api.example.com', 'k')
+    const signedIn = new MageClient('https://api.example.com', { kind: 'bearer', token: 't' })
+
+    await keyed.listDocuments('room1')
+    await signedIn.getContext()
+    await keyed.relayDocumentUploadPart('room1', 'u1', 1, new Uint8Array(1))
+    await fetchAuthConfig('https://api.example.com')
+
+    expect(calls).toHaveLength(4)
+    for (const call of calls) {
+      expect(call.init.headers!['User-Agent']).toBe(`@magelegal/cli/${version}`)
+    }
+  } finally {
+    delete globals.__VERSION__
+  }
 })

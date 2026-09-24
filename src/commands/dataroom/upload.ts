@@ -2,7 +2,7 @@ import { buildContext, CliError } from '../../context'
 import * as output from '../../output'
 import { collectUploads, joinFolder, type UploadItem } from '../../walk'
 import { attachToItem, report as reportAttachment } from './readiness'
-import { uploadFile } from './transport'
+import { uploadFile, wasAlreadyThere } from './transport'
 
 // Upload files in bounded parallel batches — never one-at-a-time (a data room
 // is hundreds of files). Bytes move direct to storage, part by part, and a part
@@ -68,9 +68,7 @@ export async function uploadCommand(
           item,
           ok: true,
           documentId: settledItem.value.id,
-          // The room already held this file (same folder, name and bytes),
-          // so no row was made.
-          alreadyThere: settledItem.value.placement === 'existing',
+          alreadyThere: wasAlreadyThere(settledItem.value),
         })
         output.success(`${label(item)}  →  ${item.folderPath ?? 'Unsorted'}`)
       } else {

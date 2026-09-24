@@ -274,11 +274,23 @@ interface RoutedCall {
   body?: unknown
 }
 
+interface UploadToolResult {
+  uploaded: number
+  failed: number
+  alreadyThere: number
+  results: { documentId?: string; folder: string | null; ok: boolean; alreadyThere?: boolean; error?: string }[]
+}
+
 /** Run upload_documents on one 10-byte file in a 4-byte-part plan, with
-    storage PUTs answered by `storage`. Returns every fetch the tool made. */
-async function uploadThroughRoutes(storage: () => Response): Promise<{
+    storage PUTs answered by `storage`. `placement` is what the server says at
+    complete (omitted: a server that predates the field). Returns every fetch
+    the tool made. */
+async function uploadThroughRoutes(
+  storage: () => Response,
+  placement?: 'created' | 'existing',
+): Promise<{
   calls: RoutedCall[]
-  result: { uploaded: number; failed: number; results: { documentId?: string; folder: string | null }[] }
+  result: UploadToolResult
 }> {
   const root = mkdtempSync(join(tmpdir(), 'mage-mcp-upload-'))
   const calls: RoutedCall[] = []
@@ -303,7 +315,10 @@ async function uploadThroughRoutes(storage: () => Response): Promise<{
       return new Response(null, { status: 200, headers: { etag: `"relay-${n}"` } })
     }
     if (call.url.includes('/documents/u1/complete')) {
-      return Response.json({ id: 'd1', name: 'x.pdf', status: 'processing' }, { status: 201 })
+      return Response.json(
+        { id: 'd1', name: 'x.pdf', status: 'processing', ...(placement ? { placement } : {}) },
+        { status: 201 },
+      )
     }
     throw new Error(`unrouted fetch: ${call.url}`)
   }) as typeof fetch
@@ -318,7 +333,7 @@ async function uploadThroughRoutes(storage: () => Response): Promise<{
     const tools = buildTools({}, async () => context)
     const result = (await toolByName(tools, 'upload_documents').handler({
       paths: [join(root, 'Legal')],
-    })) as Awaited<ReturnType<typeof uploadThroughRoutes>>['result']
+    })) as UploadToolResult
     return { calls, result }
   } finally {
     globalThis.fetch = previousFetch
@@ -369,6 +384,54 @@ test('upload_documents relays a part through the API when storage never answers'
     [`${API}/api/v1/lite/rooms/room-1/documents/u1/part/3`, '89'],
   ])
   expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/rooms/room-1/documents'))).toBe(false)
+})
+
+// ── upload_documents: a re-run reads as a re-run ──────────────────────────────
+// The agent learns a file was already in the room the same way `mage upload
+// --json` says it: per file and as a count, from the server's answer at
+// complete. Without it a second run looks exactly like a fresh upload.
+
+const storageOk = () => {
+  let n = 0
+  return () => {
+    n += 1
+    return new Response(null, { status: 200, headers: { etag: `"direct-${n}"` } })
+  }
+}
+
+test('upload_documents says a file the room already held was already there', async () => {
+  const { result } = await uploadThroughRoutes(storageOk(), 'existing')
+
+  expect(result.uploaded).toBe(1)
+  expect(result.failed).toBe(0)
+  expect(result.alreadyThere).toBe(1)
+  expect(result.results[0]!.alreadyThere).toBe(true)
+  expect(result.results[0]!.documentId).toBe('d1')
+})
+
+test('upload_documents counts a new file as new, not already there', async () => {
+  const { result } = await uploadThroughRoutes(storageOk(), 'created')
+
+  expect(result.alreadyThere).toBe(0)
+  expect(result.results[0]!.alreadyThere).toBe(false)
+})
+
+test('upload_documents treats a server that never says placement as a new upload', async () => {
+  const { result } = await uploadThroughRoutes(storageOk())
+
+  expect(result.uploaded).toBe(1)
+  expect(result.alreadyThere).toBe(0)
+  expect(result.results[0]!.alreadyThere).toBe(false)
+})
+
+test('upload_documents never counts a failed file as already there', async () => {
+  const { result } = await uploadThroughRoutes(() => new Response(null, { status: 400 }), 'existing')
+
+  expect(result.uploaded).toBe(0)
+  expect(result.failed).toBe(1)
+  expect(result.alreadyThere).toBe(0)
+  expect(result.results[0]!.ok).toBe(false)
+  expect(result.results[0]!.alreadyThere).toBeUndefined()
 })
 
 // ── download_document containment ────────────────────────────────────────────

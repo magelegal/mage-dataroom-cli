@@ -19,7 +19,7 @@ import { collectUploads, joinFolder, type UploadItem } from '../../walk'
 import { safeLocalPath } from './download'
 import { attachToItem } from './readiness'
 import { resolveDocument } from './rm'
-import { uploadFile } from './transport'
+import { uploadFile, wasAlreadyThere } from './transport'
 
 // Matches the CLI upload path: bounded parallelism, never one-at-a-time.
 const CONCURRENCY = 5
@@ -77,7 +77,7 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
     {
       name: 'upload_documents',
       description:
-        'Upload local files or whole directories into the data room, mirroring directory structure. Optionally place them in a folder and/or attach them to a readiness checklist item.',
+        'Upload local files or whole directories into the data room, mirroring directory structure. Optionally place them in a folder and/or attach them to a readiness checklist item. Running it again is safe: a file the room already holds is left as it is and comes back with `alreadyThere: true`, counted in `alreadyThere`.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -121,7 +121,14 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
           }
         }
 
-        const results: { file: string; folder: string | null; ok: boolean; documentId?: string; error?: string }[] = []
+        const results: {
+          file: string
+          folder: string | null
+          ok: boolean
+          documentId?: string
+          alreadyThere?: boolean
+          error?: string
+        }[] = []
         for (let i = 0; i < items.length; i += CONCURRENCY) {
           const batch = items.slice(i, i + CONCURRENCY)
           const settled = await Promise.allSettled(
@@ -131,7 +138,15 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
           settled.forEach((s, idx) => {
             const item = batch[idx]!
             if (s.status === 'fulfilled') {
-              results.push({ file: item.absPath, folder: item.folderPath, ok: true, documentId: s.value.id })
+              results.push({
+                file: item.absPath,
+                folder: item.folderPath,
+                ok: true,
+                documentId: s.value.id,
+                // Same answer `mage upload --json` reports: a re-run is safe,
+                // and this tells the agent which files it had already sent.
+                alreadyThere: wasAlreadyThere(s.value),
+              })
             } else {
               const error = s.reason instanceof Error ? s.reason.message : String(s.reason)
               results.push({ file: item.absPath, folder: item.folderPath, ok: false, error })
@@ -152,6 +167,7 @@ export function buildTools(opts: { apiUrl?: string }, resolve = buildContext): M
         return {
           uploaded: uploadedIds.length,
           failed: results.length - uploadedIds.length,
+          alreadyThere: results.filter((r) => r.alreadyThere).length,
           ...(attachedToItem ? { attachedToItem } : {}),
           results,
         }

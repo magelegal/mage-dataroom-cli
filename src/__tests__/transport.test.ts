@@ -5,8 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ApiError, MageClient } from '../client'
 import {
+  bothRoadsFailedMessage,
   isRelayPinned,
   resetRelayPin,
+  setRetryPause,
   uploadFile,
   uploadFileDirect,
 } from '../commands/dataroom/transport'
@@ -27,6 +29,9 @@ const realFetch = globalThis.fetch
 
 let dir: string
 let filePath: string
+/** Each pause the transport asked for between attempts, in order. Recorded,
+    never slept: the tests assert the schedule, not the clock. */
+let pauses: number[]
 const FILE_CONTENT = Buffer.from('0123456789') // 10 bytes → 3 parts at chunkSize 4
 const FILE_SHA256 = createHash('sha256').update(FILE_CONTENT).digest('hex')
 
@@ -55,6 +60,10 @@ function plan(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   resetRelayPin()
+  pauses = []
+  setRetryPause(async (ms) => {
+    pauses.push(ms)
+  })
   calls = []
   routes = []
   globalThis.fetch = (async (url: unknown, init?: { method?: string; body?: unknown }) => {
@@ -73,6 +82,7 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = realFetch
   resetRelayPin()
+  setRetryPause()
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -134,6 +144,8 @@ test('an expired part URL re-signs and retries instead of failing the file', asy
   // A 403 is storage answering, so the part stays on the direct road.
   expect(calls.some((c) => c.url.includes('/documents/u1/part/'))).toBe(false)
   expect(isRelayPinned()).toBe(false)
+  // A fresh URL fixes an expired one; there is nothing to wait out.
+  expect(pauses).toEqual([])
 })
 
 test('a part whose storage PUT gets no response is relayed through the API, and the run pins', async () => {
@@ -254,9 +266,109 @@ test('exhausted part retries fail the file with the last storage verdict', async
   ]
   const client = new MageClient(API, 'k')
 
-  expect(uploadFileDirect(client, 'room1', item())).rejects.toThrow(
+  await expect(uploadFileDirect(client, 'room1', item())).rejects.toThrow(
     'storage rejected part 1 (HTTP 500)',
   )
+  // Three tries at the same road, with a growing pause before each retry.
+  expect(pauses).toEqual([500, 1000])
+})
+
+// ── Both roads fail ──────────────────────────────────────────────────────────
+// Storage and the relay both get no response: the file fails with a sentence
+// that says what happened and what to do, never the raw "fetch failed" of the
+// last try, and the tries do not fire back to back.
+
+/** A thrown fetch the way undici throws one: a bare TypeError wrapping the
+    socket error that says why. */
+function refused(): TypeError {
+  const cause = Object.assign(new Error('connect ECONNREFUSED 192.0.2.1:443'), { code: 'ECONNREFUSED' })
+  return new TypeError('fetch failed', { cause })
+}
+
+test('when storage and the relay both get no response, the file fails in plain words', async () => {
+  routes = [
+    ['/documents/initiate', () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } }))],
+    [
+      `${STORAGE}/part/1`,
+      () => {
+        throw new TypeError('fetch failed')
+      },
+    ],
+    [
+      '/rooms/room1/documents/u1/part/',
+      () => {
+        throw refused()
+      },
+    ],
+  ]
+  const client = new MageClient(API, 'k')
+
+  let message = ''
+  try {
+    await uploadFile(client, 'room1', item())
+    throw new Error('expected a rejection')
+  } catch (err) {
+    message = (err as Error).message
+  }
+
+  expect(message).toBe(bothRoadsFailedMessage('connect ECONNREFUSED 192.0.2.1:443'))
+  expect(message).toContain('run the same upload again')
+  expect(message).not.toContain('fetch failed')
+  // Storage, then the relay at once (a different road), then storage again
+  // after a pause.
+  expect(calls.filter((c) => c.method === 'PUT').map((c) => c.url)).toEqual([
+    `${STORAGE}/part/1`,
+    `${API}/api/v1/lite/rooms/room1/documents/u1/part/1`,
+    `${STORAGE}/part/1`,
+  ])
+  expect(pauses).toEqual([500])
+  // Nothing was assembled from a part that never landed.
+  expect(calls.some((c) => c.url.includes('/complete'))).toBe(false)
+})
+
+test('a storage answer outlives a later try that got no response at all', async () => {
+  let storageCalls = 0
+  routes = [
+    [
+      '/documents/initiate',
+      () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } })),
+    ],
+    [
+      `${STORAGE}/part/1`,
+      () => {
+        storageCalls += 1
+        // Storage answers twice with an error, then goes silent on the last try.
+        if (storageCalls < 3) return new Response(null, { status: 500 })
+        throw new TypeError('fetch failed')
+      },
+    ],
+  ]
+  const client = new MageClient(API, 'k')
+
+  await expect(uploadFile(client, 'room1', item())).rejects.toThrow('storage rejected part 1 (HTTP 500)')
+  expect(storageCalls).toBe(3)
+  expect(pauses).toEqual([500, 1000])
+})
+
+test('a relay server error that never clears fails with the relay sentence', async () => {
+  routes = [
+    [
+      '/documents/initiate',
+      () => json(plan({ totalParts: 1, presignedUrls: { '1': `${STORAGE}/part/1` } })),
+    ],
+    [
+      `${STORAGE}/part/1`,
+      () => {
+        throw new TypeError('fetch failed')
+      },
+    ],
+    ['/rooms/room1/documents/u1/part/', () => json({ detail: 'The relay is busy. Try again soon.' }, 503)],
+  ]
+  const client = new MageClient(API, 'k')
+
+  await expect(uploadFile(client, 'room1', item())).rejects.toThrow('The relay is busy. Try again soon.')
+  // The switch to the relay is immediate; the relay's own retry waits.
+  expect(pauses).toEqual([500])
 })
 
 test('an empty file fails with a clear message before any request', async () => {

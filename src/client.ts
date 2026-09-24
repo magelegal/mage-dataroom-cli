@@ -122,6 +122,10 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly detail: string,
+    /** For a request that got no response (status 0): the short network
+        reason alone, e.g. `ECONNREFUSED`, for callers that word their own
+        sentence around it. */
+    readonly reason?: string,
   ) {
     super(detail)
     this.name = 'ApiError'
@@ -175,13 +179,14 @@ export function toFetchApiError(baseUrl: string, err: Error): ApiError {
   const { code, message } = rootCause(err)
   const cause = describeCause(code, message)
   if (code && NEVER_CONNECTED_CODES.has(code)) {
-    return new ApiError(0, `Could not reach ${baseUrl} (${cause})`)
+    return new ApiError(0, `Could not reach ${baseUrl} (${cause})`, cause)
   }
   return new ApiError(
     0,
     `The connection to ${baseUrl} was interrupted before a response arrived (${cause}). ` +
       `The service is likely up. A proxy, VPN, or unstable network can break ` +
       `requests mid-flight. Try again.`,
+    cause,
   )
 }
 

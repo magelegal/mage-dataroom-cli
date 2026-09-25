@@ -1,6 +1,6 @@
 # Mage CLI
 
-Upload and organize a [Mage](https://magelegal.com) data room from your terminal, or from an AI agent.
+Upload and organize a Mage ([magelegal.com](https://magelegal.com)) data room from your terminal, or from an AI agent.
 
 Built for founders running diligence who want to populate a data room fast, and for the agents they hand the job to. Point it at a folder; it mirrors the structure into your room.
 

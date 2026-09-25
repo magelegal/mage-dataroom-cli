@@ -30,6 +30,9 @@ const BANNED_NAMES = [
   'Desktop.ini',
   '$RECYCLE.BIN',
   'System Volume Information',
+  '.Spotlight-V100',
+  '.Trashes',
+  '@eaDir',
 ]
 
 /** Prefix matchers, banned only as a WHOLE literal. */

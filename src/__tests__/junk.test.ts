@@ -11,10 +11,18 @@ import { isJunkSegment } from '../junk'
  * would mean the room you see after `mage upload` is not the folder you
  * uploaded.
  */
-const EXPECTED_SEGMENTS = ['__MACOSX', '.DS_Store', 'Thumbs.db', 'desktop.ini', 'Desktop.ini']
+const EXPECTED_SEGMENTS = [
+  '__MACOSX',
+  '.DS_Store',
+  'Thumbs.db',
+  'desktop.ini',
+  '.Spotlight-V100',
+  '.Trashes',
+  '@eaDir',
+]
 
 /** Order is part of the snapshot. */
-const EXPECTED_PREFIXES = ['._', '~$']
+const EXPECTED_PREFIXES = ['._', '~$', '~WRL']
 
 test('the exact segment names are junk', () => {
   for (const segment of EXPECTED_SEGMENTS) {
@@ -28,12 +36,33 @@ test('the prefix rules are junk', () => {
   }
 })
 
+test('case does not matter', () => {
+  // Windows and macOS disks do not tell `thumbs.db` from `Thumbs.db` by
+  // default, so the file your computer wrote may carry either spelling and
+  // it is the same hidden file.
+  for (const name of [
+    'thumbs.db',
+    'THUMBS.DB',
+    'Thumbs.DB',
+    'Desktop.ini',
+    '__macosx',
+    '@EADIR',
+    '.trashes',
+    '~wrl0001.tmp',
+    '~WRL0001.tmp',
+  ]) {
+    expect(isJunkSegment(name)).toBe(true)
+  }
+})
+
 test('nothing outside the snapshot is junk', () => {
   // The half a snapshot alone would miss: a wider rule would still pass every
   // assertion above. These are the names most likely to be swept up by one.
   for (const name of [
     'Contract.pdf',
-    'thumbs.db',
+    'Thumbs.db.pdf',
+    '.Trashes-inventory.pdf',
+    'WRL0001.tmp',
     'MACOSX',
     'desktop.initiative.docx',
     'report._final.pdf',

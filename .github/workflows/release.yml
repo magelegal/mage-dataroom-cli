@@ -5,7 +5,7 @@
 # Idempotent: a tag whose version is already on npm verifies, then green-skips the publish.
 #
 # The npm-side half of the trust lives in the package's settings on npmjs.com
-# (Trusted Publisher: GitHub Actions · magelegal/mage-dataroom-cli ·
+# (Trusted Publisher: GitHub Actions • magelegal/mage-dataroom-cli •
 # release.yml). Requirements: npm CLI ≥ 11.5.1 (the runner's Node bundles an
 # older npm, hence the pinned upgrade step) and a GitHub-hosted runner. One npm quirk: a BRAND-NEW
 # package can't be born through trusted publishing — the first-ever version is

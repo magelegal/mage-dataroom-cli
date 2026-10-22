@@ -122,7 +122,7 @@ export function roomLines(rooms: LiteRoom[], boundRoomId: string | undefined): s
     .map((r) => {
       const marker = r.id === boundRoomId ? '*' : ' '
       const nda = r.teamNdaRequired && !r.teamNdaAccepted ? '  (team NDA pending)' : ''
-      return ` ${marker} ${r.name}  ${output.colors.dim(`${docCount(r)} · id ${r.id}`)}${nda}`
+      return ` ${marker} ${r.name}  ${output.colors.dim(`${docCount(r)} • id ${r.id}`)}${nda}`
     })
     .join('\n')
 }
